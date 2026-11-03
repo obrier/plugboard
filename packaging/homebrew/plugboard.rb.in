@@ -1,0 +1,50 @@
+# Rendered by scripts/release.sh. Homebrew downloads release assets anonymously,
+# so the repository (or a separate release repository) must be public.
+class Plugboard < Formula
+  desc "claude.ai connector tools as shell commands, at zero model tokens"
+  homepage "https://github.com/aanduque/plugboard"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-darwin-arm64.tar.gz"
+      sha256 "@SHA_DARWIN_ARM64@"
+    end
+    on_intel do
+      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-darwin-x64.tar.gz"
+      sha256 "@SHA_DARWIN_X64@"
+    end
+  end
+  on_linux do
+    on_arm do
+      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-linux-arm64.tar.gz"
+      sha256 "@SHA_LINUX_ARM64@"
+    end
+    on_intel do
+      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-linux-x64.tar.gz"
+      sha256 "@SHA_LINUX_X64@"
+    end
+  end
+
+  def install
+    bin.install "plugboard"
+    pkgshare.install "policy.example.toml"
+  end
+
+  def caveats
+    <<~EOS
+      plugboard drives Claude Code's internal control protocol: it needs Claude Code
+      installed and logged in (`claude /login`), and may break after a Claude Code update
+      (`plugboard doctor` says so). It is not an official Anthropic tool.
+
+      Start with:
+        plugboard refresh && plugboard doctor
+      Example policy: #{opt_pkgshare}/policy.example.toml → ~/.config/plugboard/policy.toml
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/plugboard --version")
+  end
+end

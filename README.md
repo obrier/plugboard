@@ -69,3 +69,15 @@ bun run typecheck && bun run link
 `test/bridge-client.test.ts` and its fixture are the bridge's own tests, still passing.
 
 **Internal, unsupported interface.** Passing tests show it works technically, not that Anthropic approves connector-only use. After a Claude Code update breaks it, `doctor` exits 10, and `claude_path` in `policy.toml` can point at a version under `~/.local/share/claude/versions/`.
+
+## Release (Homebrew)
+
+`scripts/release.sh` runs the tests, then compiles standalone binaries with `bun build --compile` for darwin-arm64/x64 and linux-arm64/x64. It packs each one with its LICENSE, README and example policy, and renders `release/<version>/plugboard.rb` from `packaging/homebrew/plugboard.rb.in`. It publishes nothing. Then:
+
+```bash
+gh release create v0.1.0 release/0.1.0/*.tar.gz
+```
+
+Copy `release/0.1.0/plugboard.rb` into the tap's `Formula/` (for example `aanduque/homebrew-tap`), after which `brew install aanduque/tap/plugboard` works.
+
+Homebrew downloads release assets without credentials, so the repository (or a separate release repository) must be public first.
