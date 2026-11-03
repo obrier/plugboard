@@ -129,10 +129,43 @@ export function markdownOf(value: unknown): string | undefined {
   return undefined;
 }
 
-export const OUT_FORMATS = ["toon", "json", "md", "raw"];
+/** Plain output by default; `--axi` (or PLUGBOARD_AXI=1) switches to the AXI/TOON output for agents. */
+export const mode = { axi: process.env.PLUGBOARD_AXI === "1" };
+export const OUT_FORMATS = ["text", "toon", "json", "md", "raw"];
+export const defaultFormat = () => (mode.axi ? "toon" : "text");
+
+const cell = (v: unknown) => (v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
+function table(rows: unknown[], indent: string): string[] {
+  if (!rows.every(r => r && typeof r === "object" && !Array.isArray(r))) return rows.map(r => `${indent}- ${cell(r)}`);
+  const cols = [...new Set(rows.flatMap(r => Object.keys(r as object)))];
+  const grid = [cols.map(c => c.toUpperCase()), ...rows.map(r => cols.map(c => cell((r as any)[c]).replace(/\s+/g, " ")))];
+  const widths = cols.map((_, i) => Math.max(...grid.map(row => row[i]!.length)));
+  return grid.map(row => indent + row.map((c, i) => (i === row.length - 1 ? c : c.padEnd(widths[i]!))).join("  "));
+}
+/** Human-readable rendering of any command output: `key: value` lines, lists as aligned tables, hints last. */
+export function plainText(value: unknown, indent = ""): string {
+  if (value == null) return "";
+  if (typeof value !== "object") return String(value);
+  if (Array.isArray(value)) return table(value, indent).join("\n");
+  const lines: string[] = [];
+  let hints: string[] = [];
+  for (const [key, v] of Object.entries(value)) {
+    if (key === "help") { hints = Array.isArray(v) ? v.map(String) : [String(v)]; continue; }
+    if (v === null || typeof v !== "object") lines.push(`${indent}${key}: ${v ?? "-"}`);
+    else if (Array.isArray(v) && v.every(x => x === null || typeof x !== "object")) lines.push(`${indent}${key}: ${v.length ? v.join(", ") : "-"}`);
+    else if (Array.isArray(v) && !v.length) lines.push(`${indent}${key}: -`);
+    else lines.push(`${indent}${key}:`, ...(Array.isArray(v) ? table(v, `${indent}  `) : [plainText(v, `${indent}  `)]));
+  }
+  if (hints.length) lines.push(...hints.map(h => `${indent}hint: ${h}`));
+  return lines.join("\n");
+}
 export function render(o: { raw: unknown; value: unknown; format: string; full: boolean; header?: Record<string, unknown> }): string | Record<string, unknown> {
   if (o.format === "raw") return JSON.stringify(o.raw);
   if (o.format === "json") return JSON.stringify(o.value);
+  if (o.format === "text") {
+    const body = markdownOf(o.value) ?? JSON.stringify(o.value, null, 2);
+    return o.header ? `${plainText(o.header)}\n${body}` : body;
+  }
   const { value, cut } = o.full ? { value: o.value, cut: 0 } : truncate(o.value);
   const help = cut ? [`${cut} long string(s) cut at 1500 chars: add --full`] : [];
   if (o.format === "md") {

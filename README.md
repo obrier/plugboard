@@ -12,6 +12,12 @@ plugboard doctor --as gather                 # preflight gate: exit 0 | 7 (some 
 plugboard refresh                            # recapture schemas into ~/.cache/plugboard (~6 s)
 ```
 
+## Output
+
+- **Default: plain output.** Commands print `key: value` lines and aligned tables. Tool results print as pretty JSON, or as markdown when the result is text (Slack). Errors go to stderr as `error: … (CODE)` with `hint:` lines.
+- **`--axi`** (anywhere in the command, or `PLUGBOARD_AXI=1`) switches to AXI output for agents: TOON on stdout, `help[]` hints, and errors as `error:`/`code:`/`help[]` on stdout.
+- **Fixed formats:** `--out json|md|raw` gives the same output in both modes. `batch` always writes JSONL.
+
 ## Safety
 
 - **Reads by default.** A tool is read only if it carries `readOnlyHint` and not `destructiveHint`. Anything else is a write, including tools with no annotations.

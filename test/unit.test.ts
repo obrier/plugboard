@@ -222,10 +222,17 @@ describe("errors, time, cache", () => {
 test("setup hooks installs and removes a project-scope session-start hook", () => {
   const dir = mkdtempSync(join(tmpdir(), "plugboard-hooks-"));
   try {
-    const installed = setupCommand(["hooks", "--project"], { homeDir: dir, projectDir: dir, execPath: "/usr/local/bin/plugboard", shouldInstall: () => true });
+    const installed = setupCommand(["hooks", "--project"], { homeDir: dir, projectDir: dir });
     expect(installed.claude).toBe(true);
-    expect(readFileSync(join(dir, ".claude/settings.json"), "utf8")).toContain("plugboard");
-    expect(setupCommand(["hooks", "--project", "--remove"], { homeDir: dir, projectDir: dir, execPath: "/usr/local/bin/plugboard" }).claude).toBe(false);
+    expect(readFileSync(join(dir, ".claude/settings.json"), "utf8")).toMatch(/"command": "[^"]*plugboard --axi"/);
+    expect(setupCommand(["hooks", "--project", "--remove"], { homeDir: dir, projectDir: dir }).claude).toBe(false);
     expect(code(() => setupCommand(["nope"], { homeDir: dir, projectDir: dir }))).toBe("VALIDATION_ERROR");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("plain text renderer: key lines, aligned tables, hints last", () => {
+  const { plainText } = require("../src/output");
+  expect(plainText({ profile: "gather", allow: ["a:*", "b:c"], tools: [{ name: "x", class: "read" }, { name: "longer", class: "write" }], help: ["do this"] }))
+    .toBe("profile: gather\nallow: a:*, b:c\ntools:\n  NAME    CLASS\n  x       read\n  longer  write\nhint: do this");
+  expect(plainText({ empty: [], nested: { a: 1 } })).toBe("empty: -\nnested:\n  a: 1");
 });

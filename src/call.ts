@@ -9,7 +9,7 @@ import { findTool, loadIndex, loadManifest, nearNames, shortName, type Manifest,
 import { connect, costGuard } from "./claude";
 import { classify as classifyError, fail } from "./errors";
 import { mergeArgs, parseFlags, summaryOf, toolHelp, typeOf } from "./flags";
-import { errorText, OUT_FORMATS, parseList, render, shape, unwrap } from "./output";
+import { defaultFormat, errorText, OUT_FORMATS, parseList, render, shape, unwrap } from "./output";
 import { classify, decide, loadPolicy, profileFor, resolveConnector, type Policy, type ToolClass } from "./policy";
 import { formatTime, parseTime } from "./time";
 
@@ -152,7 +152,7 @@ export async function runTool(connectorRef: string, args: string[]) {
     return toolHelp({ bin: BIN, connector: manifest.id, short: shortName(manifest.id, tool.name), schema: tool.inputSchema, description: tool.description,
       cls: `${cls}${tool.annotations?.destructiveHint ? ", destructive" : ""}`, reason, timeParams: timeParams(policy, manifest.id, tool), full: g.full === true });
   }
-  const format = String(g.out ?? "toon");
+  const format = String(g.out ?? defaultFormat());
   if (!OUT_FORMATS.includes(format)) throw fail("VALIDATION_ERROR", `--out must be one of ${OUT_FORMATS.join(", ")}`);
   const write = g.write === true;
   const profile = profileName(g);

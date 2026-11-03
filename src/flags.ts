@@ -6,9 +6,9 @@ type Schema = Record<string, any>;
 
 /** The CLI's own flags. Checked 3 Nov against all 1,396 tool parameter names: none collide.
  * A tool parameter that ever does is reachable only through --json. */
-export const GLOBAL_FLAGS = ["as", "write", "plan", "expect-hash", "write-key", "json", "arg-file", "select", "where", "out", "items", "deadline", "full", "help"] as const;
+export const GLOBAL_FLAGS = ["as", "write", "plan", "expect-hash", "write-key", "json", "arg-file", "select", "where", "out", "items", "deadline", "full", "help", "axi"] as const;
 const RESERVED = new Set<string>(GLOBAL_FLAGS);
-const BOOLEAN_GLOBALS = new Set(["write", "plan", "full", "help"]);
+const BOOLEAN_GLOBALS = new Set(["write", "plan", "full", "help", "axi"]);
 
 export const kebab = (name: string) => name.replace(/_/g, "-").replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 const usage = (message: string, help: string[] = []) => fail("VALIDATION_ERROR", message, help);
@@ -184,7 +184,7 @@ export function toolHelp(o: { bin: string; connector: string; short: string; sch
     `flags[${lines.length}]:`,
     ...lines,
     ...(shadowed.length ? [`only via --json (names clash with global flags): ${shadowed.join(", ")}`] : []),
-    `global: --json '<obj>' | --arg-file <path|-> | --select a,b.c | --where '<expr>' | --items <path> | --out toon|json|md|raw | --deadline 30s | --full | --plan | --as <profile>${o.cls === "write" ? " | --write --write-key <k> --expect-hash sha256:<hex>" : ""}`,
+    `global: --json '<obj>' | --arg-file <path|-> | --select a,b.c | --where '<expr>' | --items <path> | --out text|toon|json|md|raw | --deadline 30s | --full | --plan | --as <profile>${o.cls === "write" ? " | --write --write-key <k> --expect-hash sha256:<hex>" : ""}`,
     "",
   ].join("\n");
 }

@@ -5,6 +5,8 @@ description: Call claude.ai connector tools (Slack, Gmail, Google Calendar, Driv
 
 # plugboard
 
+- **Always pass `--axi`** (or set `PLUGBOARD_AXI=1`): it gives compact TOON output with `help[]` hints. Without it, output is plain text for humans.
+
 - `plugboard` shows the connectors. `plugboard <connector>` lists its tools. `plugboard find <words>` searches all of them.
 - `plugboard <connector> <tool> --help` shows the flags, generated from the schema. Then call the tool with `--flag value`; objects take `--json '{…}'`.
 - Use `--out json` for scripts, `--out md` for Slack's markdown results, and `--select a,b.c` / `--where 'expr'` / `--items <list>` to keep output small.

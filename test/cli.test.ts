@@ -56,7 +56,7 @@ async function run(args: string[], o: { stdin?: string; env?: Record<string, str
   Object.assign(env, o.env);
   const proc = Bun.spawn(["bun", cli, ...args], { env, stdin: o.stdin === undefined ? "ignore" : new Blob([o.stdin]), stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  return { code: await proc.exited, stdout, stderr };
+  return { code: await proc.exited, stdout, stderr, all: stdout + stderr };
 }
 const calls = () => (existsSync(join(fake, "calls.jsonl")) ? readFileSync(join(fake, "calls.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : []);
 const audit = () => readFileSync(join(root, "state/audit.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
@@ -70,13 +70,13 @@ test("read: transforms, unwrap, select, md; cost guard passes", async () => {
   const after = Number(calls()[0].args.after);
   expect(Math.abs(after - (Date.now() / 1000 - 86400))).toBeLessThan(60);
   expect(typeof calls()[0].args.after).toBe("string"); // the schema says string
-  expect((await run(["slack", "search-public", "--query", "y", "--where", "n > 1", "--select", "user"])).stdout).toContain("ana");
+  expect((await run(["slack", "search-public", "--query", "y", "--where", "n > 1", "--select", "user"])).all).toContain("ana");
 });
 
 test("auth: a needs-auth connector is AUTH_REQUIRED (exit 4) before any call", async () => {
   const r = await run(["gmail", "list-labels"]);
   expect(r.code).toBe(4);
-  expect(r.stdout).toContain("AUTH_REQUIRED");
+  expect(r.all).toContain("AUTH_REQUIRED");
   expect(calls()).toHaveLength(0);
 });
 
@@ -84,7 +84,7 @@ test("usage errors exit 2; unknown tool suggests near names; upstream isError ex
   expect((await run(["slack", "search-public", "--limit", "x"])).code).toBe(2);
   const near = await run(["slack", "search"]);
   expect(near.code).toBe(2);
-  expect(near.stdout).toContain("search-public");
+  expect(near.all).toContain("search-public");
   expect((await run(["slack", "search-public", "--query", "iserror"])).code).toBe(1);
 });
 
@@ -103,14 +103,14 @@ test("write: sends once, audits attempt then ok with ref, replays without callin
   const args = [...SEND, "--as", "executor", "--write", "--write-key", "out-1", "--expect-hash", hash];
   const first = await run(args);
   expect(first.code).toBe(0);
-  expect(first.stdout).toContain("sent: true");
+  expect(first.all).toContain("sent: true");
   expect(audit().map(e => e.status)).toEqual(["attempt", "ok"]);
   expect(audit()[1].ref).toBe("1762243803.1234");
   expect(audit()[0].payload_sha256).toBe(hash);
   expect(JSON.stringify(audit())).not.toContain("hello"); // hashes, never payloads
   const again = await run(args);
   expect(again.code).toBe(0);
-  expect(again.stdout).toContain("replayed: true");
+  expect(again.all).toContain("replayed: true");
   expect(calls()).toHaveLength(1);
 });
 
@@ -122,9 +122,9 @@ test("write: a timeout is WRITE_OUTCOME_UNKNOWN (exit 6), blocks the key until r
   expect(audit().map(e => e.status)).toEqual(["attempt", "unknown"]);
   expect((await run(args)).code).toBe(6);
   expect(calls()).toHaveLength(1);
-  expect((await run(["audit", "--unresolved"])).stdout).toContain("out-2");
+  expect((await run(["audit", "--unresolved"])).all).toContain("out-2");
   expect((await run(["audit", "resolve", "out-2", "--sent"])).code).toBe(0);
-  expect((await run(args)).stdout).toContain("replayed: true");
+  expect((await run(args)).all).toContain("replayed: true");
   expect(calls()).toHaveLength(1);
 });
 
@@ -133,7 +133,7 @@ test("write: refused inside a Claude Code session unless the profile allows it",
   const tail = ["--write", "--write-key", "out-3", "--expect-hash", hash];
   const blocked = await run([...SEND, "--as", "executor", ...tail], { env: { CLAUDECODE: "1" } });
   expect(blocked.code).toBe(3);
-  expect(blocked.stdout).toContain("CLAUDECODE");
+  expect(blocked.all).toContain("CLAUDECODE");
   expect((await run([...SEND, "--as", "agent", ...tail], { env: { CLAUDECODE: "1" } })).code).toBe(0);
 });
 
@@ -141,7 +141,7 @@ test("cost guard: a nonzero session cost exits 10", async () => {
   writeFileSync(join(fake, "cost"), "1");
   const r = await run(["slack", "search-public", "--query", "x"]);
   expect(r.code).toBe(10);
-  expect(r.stdout).toContain("COST_GUARD");
+  expect(r.all).toContain("COST_GUARD");
 });
 
 test("batch: per-line results, 429 backoff, auth fail-fast, writes refused, bad lines isolated", async () => {
@@ -184,19 +184,36 @@ test("doctor: gate exit codes, blind connectors, drift and audit warnings", asyn
   expect(result.checks.find((c: { check: string }) => c.check === "drift:slack")).toBeUndefined();
   writeFileSync(join(fake, "gmail-connected"), "1");
   const green = await run(["doctor", "--as", "gather"]);
-  expect(green.stdout).toContain("drift:gmail"); // gmail has no cached manifest now that it connects
+  expect(green.all).toContain("drift:gmail"); // gmail has no cached manifest now that it connects
   expect(green.code).toBe(0);
   writeFileSync(join(fake, "cost"), "1");
   expect((await run(["doctor"])).code).toBe(10);
 });
 
-test("home, listing, help, find and policy never spawn claude", async () => {
+test("home, listing, help, find and policy never spawn claude; plain by default, AXI with --axi", async () => {
   const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
-  expect((await run([], { env })).stdout).toContain("connectors[2]");
-  expect((await run(["slack"], { env })).stdout).toContain("send-message,write");
-  expect((await run(["slack", "send-message", "--help"], { env })).stdout).toContain("--channel-id <text>");
-  expect((await run(["find", "search"], { env })).stdout).toContain("search-public");
-  expect((await run(["policy", "--as", "executor", "slack"], { env })).stdout).toContain("send-message,write");
+  expect((await run([], { env })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
+  expect((await run(["--axi"], { env })).all).toContain("connectors[2]");
+  expect((await run(["slack"], { env })).all).toMatch(/send-message\s+write/);
+  expect((await run(["slack", "--axi"], { env })).all).toContain("send-message,write");
+  expect((await run(["slack", "send-message", "--help"], { env })).all).toContain("--channel-id <text>");
+  expect((await run(["find", "search"], { env })).all).toContain("search-public");
+  expect((await run(["policy", "--as", "executor", "slack"], { env })).all).toMatch(/send-message\s+write/);
+});
+
+test("errors: plain goes to stderr as `error: … (CODE)`; --axi keeps the AXI shape on stdout", async () => {
+  const plain = await run(["slack", "nope"]);
+  expect(plain.stdout).toBe("");
+  expect(plain.stderr).toContain("error: slack has no tool \"nope\" (NOT_FOUND)");
+  const axi = await run(["slack", "nope", "--axi"]);
+  expect(axi.stdout).toContain("code: NOT_FOUND");
+  expect(axi.code).toBe(2);
+});
+
+test("tool results: plain prints JSON or markdown; --axi prints TOON", async () => {
+  expect(JSON.parse((await run(["slack", "search-public", "--query", "x", "--items", "matches", "--select", "user"])).stdout).matches).toEqual([{ user: "jose" }, { user: "ana" }]);
+  expect((await run(["slack", "search-public", "--query", "x", "--out", "md"])).stdout).toContain("# Results for x");
+  expect((await run(["slack", "search-public", "--query", "x", "--axi", "--items", "matches", "--select", "user"])).stdout).toContain("matches[2]{user}");
 });
 
 test("write handshake: --plan on the args file, then the write with that hash; an edited file is refused", async () => {
