@@ -1,14 +1,15 @@
 {
-  "name": "connectors-axi",
+  "name": "plugboard",
   "version": "0.1.0",
   "description": "claude.ai connector tools as shell commands, at zero model tokens",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "bin": {
-    "connectors-axi": "./dist/connectors-axi"
+    "plugboard": "./dist/plugboard"
   },
   "scripts": {
-    "build": "bun build --target=bun --banner='#!/usr/bin/env bun' --outfile=dist/connectors-axi ./src/cli.ts && chmod +x dist/connectors-axi",
+    "build": "bun build --target=bun --banner='#!/usr/bin/env bun' --outfile=dist/plugboard ./src/cli.ts && chmod +x dist/plugboard",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "link": "bun run build && bun link"

@@ -8,6 +8,10 @@ import { mergeArgs, parseFlags, toolHelp } from "../src/flags";
 import { markdownOf, render, shape, unwrap } from "../src/output";
 import { classify, decide, parsePolicy } from "../src/policy";
 import { formatTime, parseTime } from "../src/time";
+import { setupCommand } from "../src/cli";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const schema = {
   type: "object",
@@ -213,4 +217,15 @@ describe("errors, time, cache", () => {
     expect(findTool(m, "slack_read_thread")?.name).toBe("slack_read_thread");
     expect(findTool(m, "slack-read-thread")?.name).toBe("slack_read_thread");
   });
+});
+
+test("setup hooks installs and removes a project-scope session-start hook", () => {
+  const dir = mkdtempSync(join(tmpdir(), "plugboard-hooks-"));
+  try {
+    const installed = setupCommand(["hooks", "--project"], { homeDir: dir, projectDir: dir, execPath: "/usr/local/bin/plugboard", shouldInstall: () => true });
+    expect(installed.claude).toBe(true);
+    expect(readFileSync(join(dir, ".claude/settings.json"), "utf8")).toContain("plugboard");
+    expect(setupCommand(["hooks", "--project", "--remove"], { homeDir: dir, projectDir: dir, execPath: "/usr/local/bin/plugboard" }).claude).toBe(false);
+    expect(code(() => setupCommand(["nope"], { homeDir: dir, projectDir: dir }))).toBe("VALIDATION_ERROR");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

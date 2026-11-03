@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { AxiError, runAxiCli } from "axi-sdk-js";
+import { AxiError, installSessionStartHooks, runAxiCli, sessionStartHookStatus, uninstallSessionStartHooks } from "axi-sdk-js";
 import { encode } from "@toon-format/toon";
 import { appendAudit, readAudit, unresolvedKeys } from "./audit";
 import { batchCommand } from "./batch";
@@ -16,7 +16,7 @@ const renderError = (message: string, code: string, help: string[] = []) => enco
 export const DESCRIPTION = "claude.ai connector tools (Slack, Gmail, Calendar, Drive, Datadog, Sentry, …) as shell commands, at zero model tokens";
 
 const TOP_LEVEL_HELP = `usage: ${BIN} <connector> <tool> [--param value …] [global flags]
-commands[8]:
+commands[9]:
   <connector>          List a connector's tools with their class (read | write)
   <connector> <tool>   Call a tool; --help shows its flags, generated from its schema
   find <words>         Search all cached tools by name and description
@@ -25,6 +25,7 @@ commands[8]:
   refresh [id…]        Recapture tool schemas into the cache (~4 s)
   policy [--as p]      What a profile may call
   audit                Write log: audit [--unresolved] [--since 1d] | audit resolve <key> --sent|--not-sent
+  setup hooks          Show the home view at the start of Claude Code, Codex and OpenCode sessions (opt-in; --project, --remove)
 global flags (after the tool):
   --as <profile>  --select a,b.c  --where '<expr>'  --items <path>  --out toon|json|md|raw  --full
   --json '<obj>'  --arg-file <path|->  --deadline 30s  --plan  --write --write-key <k> --expect-hash sha256:<hex>
@@ -51,6 +52,7 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   refresh: `usage: ${BIN} refresh [connector…]\n  Recaptures schemas (one capture, ~4 s) and replaces each connector that is connected; others keep their cached tools.\n`,
   policy: `usage: ${BIN} policy [--as <profile>] [<connector>]\n  Shows a profile's mode and what it may call; with a connector, lists its allowed tools.\n`,
+  setup: `usage: ${BIN} setup hooks [--project] [--remove]\n  Opt-in: installs a session-start hook that prints the home view (cache only, no spawn) into Claude Code, Codex and OpenCode.\n  --project: this repository only. --remove: uninstall.\n`,
   audit: `usage: ${BIN} audit [--unresolved] [--since 1d] | audit resolve <write-key> --sent|--not-sent\n  The write log: one line per attempt and outcome, with payload hashes, never payloads.\n`,
 };
 
@@ -60,7 +62,7 @@ function home() {
   const policy = loadPolicy();
   const index = loadIndex();
   const doc = lastDoctor();
-  const profile = process.env.CONNECTORS_AXI_PROFILE ?? "default";
+  const profile = process.env.PLUGBOARD_PROFILE ?? "default";
   if (!index) return { status: "no cache yet", help: [`Run \`${BIN} refresh\` to capture the connector tools (~4 s)`, `Run \`${BIN} doctor\` to check the bridge`] };
   const connectors = Object.entries(index.connectors).map(([id, c]) => ({ id, status: c.status, read: c.read, write: c.write }))
     .sort((a, b) => Number(b.status === "connected") - Number(a.status === "connected") || a.id.localeCompare(b.id));
@@ -95,7 +97,7 @@ function find(args: string[]) {
 function policyCommand(args: string[]) {
   const { values, positionals } = parseArgs({ args, strict: true, allowPositionals: true, options: { as: { type: "string" } } });
   const policy = loadPolicy();
-  const name = String(values.as ?? process.env.CONNECTORS_AXI_PROFILE ?? "default");
+  const name = String(values.as ?? process.env.PLUGBOARD_PROFILE ?? "default");
   const profile = profileFor(policy, name);
   const allowed = (id: string) => (loadManifest(id)?.tools ?? []).map(t => ({ t, cls: classify(policy, id, t) })).filter(({ t, cls }) =>
     !profile.deny.some(p => matches(p, id, t.name))
@@ -111,6 +113,22 @@ function policyCommand(args: string[]) {
     return { id, read: list.filter(x => x.cls === "read").length, write: list.filter(x => x.cls === "write").length };
   }).filter(c => c.read || c.write);
   return { ...head, connectors, help: [`Run \`${BIN} policy --as ${name} <connector>\` to list the tools`] };
+}
+
+export function setupCommand(args: string[], options: { homeDir?: string; projectDir?: string; execPath?: string; shouldInstall?: (path: string) => boolean } = {}) {
+  const { values, positionals } = parseArgs({ args, strict: true, allowPositionals: true, options: { project: { type: "boolean" }, remove: { type: "boolean" } } });
+  if (positionals[0] !== "hooks" || positionals.length > 1) throw fail("VALIDATION_ERROR", `usage: ${BIN} setup hooks [--project] [--remove]`);
+  const scope = values.project ? "project" : "user";
+  const { shouldInstall, ...where } = options;
+  const identity = { marker: BIN, ...where, scope } as const;
+  if (values.remove) uninstallSessionStartHooks(identity);
+  else installSessionStartHooks({ ...identity, binaryNames: [BIN], ...(shouldInstall ? { shouldInstall } : {}) });
+  const status = sessionStartHookStatus(identity);
+  return {
+    setup: values.remove ? "hooks removed" : "hooks installed or already up to date", scope,
+    claude: status.claude.installed, codex: status.codex.installed, opencode: status.opencode.installed,
+    help: values.remove ? [] : [`Run \`${BIN} setup hooks${values.project ? " --project" : ""} --remove\` to undo`],
+  };
 }
 
 function auditCommand(args: string[]) {
@@ -141,7 +159,7 @@ async function main() {
     }
     return;
   }
-  const builtins = new Set(["find", "batch", "doctor", "refresh", "policy", "audit", "update"]);
+  const builtins = new Set(["find", "batch", "doctor", "refresh", "policy", "audit", "setup", "update"]);
   // No cache at all: the first connector call captures once.
   if (argv[0] && !argv[0].startsWith("-") && !builtins.has(argv[0]) && !loadIndex()) {
     try { await refresh(loadPolicy()); } catch { /* the call below reports what is missing */ }
@@ -171,6 +189,7 @@ async function main() {
       find,
       policy: policyCommand,
       audit: auditCommand,
+      setup: args => setupCommand(args),
       refresh: async args => {
         const result = await refresh(loadPolicy(), args);
         return result;
@@ -180,7 +199,7 @@ async function main() {
         exitOverride = exitCode;
         return out;
       },
-      update: () => ({ update: "local build, not published", help: ["cd ~/Developer/connectors-axi && git pull && bun run link"] }),
+      update: () => ({ update: "local build, not published", help: ["cd ~/Developer/plugboard && git pull && bun run link"] }),
     },
   });
   if (exitOverride !== undefined && !process.exitCode) process.exitCode = exitOverride;

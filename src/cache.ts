@@ -114,7 +114,7 @@ export async function refresh(policy: Policy, only?: string[]): Promise<RefreshR
     const [servers, capture] = await Promise.all([
       client.waitForServers(),
       captureConnectorSchemas({ claudePath: claudePath(policy) }).catch(error => {
-        throw fail("BRIDGE_BROKEN", `Schema capture failed: ${(error as Error).message}`, ["Run `connectors-axi doctor`"]);
+        throw fail("BRIDGE_BROKEN", `Schema capture failed: ${(error as Error).message}`, ["Run `plugboard doctor`"]);
       }),
     ]);
     const { index, manifests, result } = mergeCapture(loadIndex(), servers, capture.schemas, only);

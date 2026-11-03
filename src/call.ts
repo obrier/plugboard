@@ -13,7 +13,7 @@ import { errorText, OUT_FORMATS, parseList, render, shape, unwrap } from "./outp
 import { classify, decide, loadPolicy, profileFor, resolveConnector, type Policy, type ToolClass } from "./policy";
 import { formatTime, parseTime } from "./time";
 
-export const BIN = "connectors-axi";
+export const BIN = "plugboard";
 
 // --- lookup ---------------------------------------------------------------------
 
@@ -135,7 +135,7 @@ export function refOf(value: unknown): string | undefined {
 }
 
 export const profileName = (globals: Record<string, string | boolean>) =>
-  String(globals.as ?? process.env.CONNECTORS_AXI_PROFILE ?? "default");
+  String(globals.as ?? process.env.PLUGBOARD_PROFILE ?? "default");
 
 export async function runTool(connectorRef: string, args: string[]) {
   const policy = loadPolicy();
@@ -156,7 +156,12 @@ export async function runTool(connectorRef: string, args: string[]) {
   if (!OUT_FORMATS.includes(format)) throw fail("VALIDATION_ERROR", `--out must be one of ${OUT_FORMATS.join(", ")}`);
   const write = g.write === true;
   const profile = profileName(g);
-  const p = prepare(policy, manifest, tool, mergeArgs(parsed), write);
+  const merged = mergeArgs(parsed);
+  // Tools with their own idempotency_key (35 Datadog writes) get the --write-key, so the service also
+  // refuses a duplicate. Done before hashing: run --plan with the same --write-key to get the hash.
+  if (typeof g["write-key"] === "string" && "idempotency_key" in (tool.inputSchema.properties ?? {}) && merged.idempotency_key === undefined)
+    merged.idempotency_key = g["write-key"];
+  const p = prepare(policy, manifest, tool, merged, write);
 
   if (g.plan) {
     let decision = "allowed";
@@ -191,7 +196,7 @@ async function runWrite(policy: Policy, p: Prepared, profile: string, g: Record<
   const { state, last } = keyState(key);
   if (state === "ok") return { replayed: true, key, ref: last?.ref ?? null, at: last?.ts, help: ["Already sent under this key: nothing was called"] };
   if (state === "unknown") throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} has no known outcome`, [
-    "Check the destination by hand, then run `connectors-axi audit resolve " + key + " --sent` or `--not-sent`",
+    "Check the destination by hand, then run `plugboard audit resolve " + key + " --sent` or `--not-sent`",
   ]);
 
   const client = await connect(policy);
@@ -208,7 +213,7 @@ async function runWrite(policy: Policy, p: Prepared, profile: string, g: Record<
       if (code === "TIMEOUT" || code === "BRIDGE_BROKEN") {
         appendAudit({ key, status: "unknown", code, ms: Date.now() - started });
         throw fail("WRITE_OUTCOME_UNKNOWN", `Write ${key} may or may not have happened: ${(error as Error).message}`, [
-          "Check the destination by hand, then `connectors-axi audit resolve " + key + " --sent|--not-sent`",
+          "Check the destination by hand, then `plugboard audit resolve " + key + " --sent|--not-sent`",
         ]);
       }
       appendAudit({ key, status: "error", code, message: (error as Error).message.slice(0, 300), ms: Date.now() - started });

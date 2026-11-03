@@ -29,6 +29,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         { name: "slack_search_public", annotations: { readOnly: true } },
         { name: "slack_send_message" },
         { name: "slack_delete_message", annotations: { destructive: true } },
+        { name: "slack_create_note" },
       ] },
       { name: "claude.ai Gmail", status: flag("gmail-connected") ? "connected" : "needs-auth", tools: [] },
     ] }); break;

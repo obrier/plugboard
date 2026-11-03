@@ -117,7 +117,7 @@ export function decide(policy: Policy, profileName: string, id: string, tool: Pi
     if (!profile.allow.some(p => matches(p, id, tool.name))) throw denied(`${key} is not in profiles.${profileName}.allow`);
     return { profile, cls };
   }
-  if (profile.mode !== "write") throw denied(`${key} is a write tool and profile "${profileName}" is read-only`, ["Only the executor profile writes; see `connectors-axi policy`"]);
+  if (profile.mode !== "write") throw denied(`${key} is a write tool and profile "${profileName}" is read-only`, ["Only the executor profile writes; see `plugboard policy`"]);
   if (!write) throw denied(`${key} is a write tool: pass --write`);
   if (!profile.allow.includes(key)) throw denied(`write tools must be named exactly in profiles.${profileName}.allow; ${key} is not`);
   if (tool.annotations?.destructiveHint === true && !profile.allowDestructive) throw denied(`${key} is destructive and profiles.${profileName}.allow_destructive is false`);

@@ -134,7 +134,7 @@ export async function batchCommand(argv: string[]): Promise<number> {
     ({ values } = parseArgs({ args: argv, strict: true, allowPositionals: false, options: {
       as: { type: "string" }, concurrency: { type: "string" }, ordered: { type: "boolean" }, budget: { type: "string" },
     } }));
-  } catch (error) { throw fail("VALIDATION_ERROR", (error as Error).message, ["usage: connectors-axi batch [--as <profile>] [--concurrency 4] [--ordered] [--budget 5m] < calls.jsonl"]); }
+  } catch (error) { throw fail("VALIDATION_ERROR", (error as Error).message, ["usage: plugboard batch [--as <profile>] [--concurrency 4] [--ordered] [--budget 5m] < calls.jsonl"]); }
   const policy = loadPolicy();
   const concurrency = values.concurrency === undefined ? policy.limits.concurrency : Number(values.concurrency);
   if (!Number.isInteger(concurrency) || concurrency < 1) throw fail("VALIDATION_ERROR", "--concurrency must be a positive whole number");

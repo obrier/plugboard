@@ -5,7 +5,7 @@ import { childEnv } from "./bridge/capture";
 import { fail } from "./errors";
 import type { Policy } from "./policy";
 
-export const claudePath = (policy: Policy) => process.env.CONNECTORS_AXI_CLAUDE ?? policy.claudePath ?? join(homedir(), ".local/bin/claude");
+export const claudePath = (policy: Policy) => process.env.PLUGBOARD_CLAUDE ?? policy.claudePath ?? join(homedir(), ".local/bin/claude");
 
 function run(path: string, args: string[]) {
   try {
@@ -29,7 +29,7 @@ export async function connect(policy: Policy) {
     return await ClaudeConnectors.connect({ claudePath: path });
   } catch (error) {
     throw fail("BRIDGE_BROKEN", `Claude Code control protocol failed (${path}): ${(error as Error).message}`, [
-      "Run `connectors-axi doctor` for details",
+      "Run `plugboard doctor` for details",
       "After a breaking update, set claude_path in policy.toml to a version under ~/.local/share/claude/versions/",
     ]);
   }

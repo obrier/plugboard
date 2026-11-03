@@ -1,21 +1,21 @@
-# connectors-axi
+# plugboard
 
 claude.ai connector tools (Slack, Gmail, Calendar, Drive, Datadog, Sentry, …) as shell commands, at zero model tokens. An AXI CLI that drives Claude Code's internal `stream-json` control protocol (`mcp_status`, `mcp_call`).
 
 ```bash
-connectors-axi                                    # home: connectors, profile, bridge status (no spawn)
-connectors-axi slack                              # list tools with class read | write
-connectors-axi slack search-public --help         # flags generated from the tool's JSON Schema
-connectors-axi cal list-events --calendar-id primary --start-time today --end-time tomorrow --items events --select summary,start.dateTime
-connectors-axi batch --as gather < calls.jsonl > results.jsonl
-connectors-axi doctor --as gather                 # preflight gate: exit 0 | 7 (some blind) | 10 (bridge broken)
-connectors-axi refresh                            # recapture schemas into ~/.cache/connectors-axi (~6 s)
+plugboard                                    # home: connectors, profile, bridge status (no spawn)
+plugboard slack                              # list tools with class read | write
+plugboard slack search-public --help         # flags generated from the tool's JSON Schema
+plugboard cal list-events --calendar-id primary --start-time today --end-time tomorrow --items events --select summary,start.dateTime
+plugboard batch --as gather < calls.jsonl > results.jsonl
+plugboard doctor --as gather                 # preflight gate: exit 0 | 7 (some blind) | 10 (bridge broken)
+plugboard refresh                            # recapture schemas into ~/.cache/plugboard (~6 s)
 ```
 
 ## Safety
 
 - **Reads by default.** A tool is read only if it carries `readOnlyHint` and not `destructiveHint`. Anything else is a write, including tools with no annotations.
-- **Profiles** live in `policy.toml`: `$CONNECTORS_AXI_POLICY`, else `~/.config/connectors-axi/policy.toml`; see `policy.example.toml`.
+- **Profiles** live in `policy.toml`: `$PLUGBOARD_POLICY`, else `~/.config/plugboard/policy.toml`; see `policy.example.toml`.
   - Globs only ever grant read tools.
   - A write tool must be named exactly in a `mode = "write"` profile.
   - Deny beats allow.
@@ -26,7 +26,7 @@ connectors-axi refresh                            # recapture schemas into ~/.ca
 - **How writes are handled:**
   - Writes skip the time transforms.
   - They are never retried, and they are refused when `CLAUDECODE` is set (inside Claude Code), unless the profile sets `allow_in_agent = true`.
-  - Every write is logged to `~/.local/state/connectors-axi/audit.jsonl` before and after the call, with the payload hash only. A timeout leaves the key blocked (exit 6) until `audit resolve <key> --sent|--not-sent`.
+  - Every write is logged to `~/.local/state/plugboard/audit.jsonl` before and after the call, with the payload hash only. A timeout leaves the key blocked (exit 6) until `audit resolve <key> --sent|--not-sent`.
 - **Cost guard:** every run ends with `get_session_cost`. Anything but `$0.0000` / 0 tokens exits 10.
 - **The child `claude` runs with a scrubbed environment.** Per-session `CLAUDE_CODE_*` and `CLAUDECODE` are dropped; login still works (checked 3 Nov).
 

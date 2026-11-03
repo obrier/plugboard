@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mergeCapture } from "../src/cache";
 
-const root = mkdtempSync(join(tmpdir(), "connectors-axi-test-"));
+const root = mkdtempSync(join(tmpdir(), "plugboard-test-"));
 const fake = join(root, "fake");
 const cli = join(import.meta.dir, "../src/cli.ts");
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -19,7 +19,7 @@ mode = "read"
 allow = ["slack:*", "gmail:*"]
 [profiles.executor]
 mode = "write"
-allow = ["slack:slack_send_message", "slack:slack_delete_message"]
+allow = ["slack:slack_send_message", "slack:slack_delete_message", "slack:slack_create_note"]
 [profiles.agent]
 mode = "write"
 allow = ["slack:slack_send_message"]
@@ -32,13 +32,14 @@ beforeEach(() => {
   const servers = [
     { name: "claude.ai Slack", status: "connected", tools: [
       { name: "slack_search_public", annotations: { readOnly: true } }, { name: "slack_send_message" },
-      { name: "slack_delete_message", annotations: { destructive: true } }] },
+      { name: "slack_delete_message", annotations: { destructive: true } }, { name: "slack_create_note" }] },
     { name: "claude.ai Gmail", status: "connected", tools: [{ name: "list_labels", annotations: { readOnly: true } }] },
   ];
   const schemas = [
     { name: "mcp__claude_ai_Slack__slack_search_public", inputSchema: { type: "object", properties: { query: { type: "string" }, after: { type: "string" }, limit: { type: "integer" } } } },
     { name: "mcp__claude_ai_Slack__slack_send_message", inputSchema: { type: "object", required: ["channel_id", "message"], properties: { channel_id: { type: "string" }, message: { type: "string" } } } },
     { name: "mcp__claude_ai_Slack__slack_delete_message", inputSchema: { type: "object", properties: { ts: { type: "string" } } } },
+    { name: "mcp__claude_ai_Slack__slack_create_note", inputSchema: { type: "object", properties: { text: { type: "string" }, idempotency_key: { type: "string" } } } },
     { name: "mcp__claude_ai_Gmail__list_labels", inputSchema: { type: "object", properties: {} } },
   ];
   const { index, manifests } = mergeCapture(undefined, servers as never, schemas);
@@ -48,10 +49,10 @@ beforeEach(() => {
 });
 
 async function run(args: string[], o: { stdin?: string; env?: Record<string, string> } = {}) {
-  const env: Record<string, string | undefined> = { ...process.env, CONNECTORS_AXI_CACHE: join(root, "cache"), CONNECTORS_AXI_STATE: join(root, "state"),
-    CONNECTORS_AXI_POLICY: join(root, "policy.toml"), CONNECTORS_AXI_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, ...o.env };
+  const env: Record<string, string | undefined> = { ...process.env, PLUGBOARD_CACHE: join(root, "cache"), PLUGBOARD_STATE: join(root, "state"),
+    PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, ...o.env };
   delete env.CLAUDECODE; // these tests run inside Claude Code; the tripwire test sets it back on purpose
-  delete env.CONNECTORS_AXI_PROFILE;
+  delete env.PLUGBOARD_PROFILE;
   Object.assign(env, o.env);
   const proc = Bun.spawn(["bun", cli, ...args], { env, stdin: o.stdin === undefined ? "ignore" : new Blob([o.stdin]), stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
@@ -190,7 +191,7 @@ test("doctor: gate exit codes, blind connectors, drift and audit warnings", asyn
 });
 
 test("home, listing, help, find and policy never spawn claude", async () => {
-  const env = { CONNECTORS_AXI_CLAUDE: "/nonexistent/claude" };
+  const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
   expect((await run([], { env })).stdout).toContain("connectors[2]");
   expect((await run(["slack"], { env })).stdout).toContain("send-message,write");
   expect((await run(["slack", "send-message", "--help"], { env })).stdout).toContain("--channel-id <text>");
@@ -210,4 +211,13 @@ test("write handshake: --plan on the args file, then the write with that hash; a
   writeFileSync(argsFile, JSON.stringify({ message: "approved text", channel_id: "D1" })); // same payload, other key order
   expect((await run(send)).code).toBe(0);
   expect(calls()).toEqual([{ tool: "mcp__claude_ai_Slack__slack_send_message", args: { message: "approved text", channel_id: "D1" } }]);
+});
+
+test("a tool's own idempotency_key is filled from --write-key, in the plan hash and in the call", async () => {
+  const note = ["slack", "create-note", "--text", "n"];
+  const plan = JSON.parse((await run([...note, "--write-key", "out-7", "--plan", "--out", "json"])).stdout);
+  expect(plan.payload).toEqual({ text: "n", idempotency_key: "out-7" });
+  expect(plan.hash).not.toBe(await planHash(note)); // the key is part of what was approved
+  expect((await run([...note, "--as", "executor", "--write", "--write-key", "out-7", "--expect-hash", plan.hash])).code).toBe(0);
+  expect(calls()[0].args).toEqual({ text: "n", idempotency_key: "out-7" });
 });

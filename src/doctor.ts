@@ -21,7 +21,7 @@ const LIVE_READS: Record<string, [string, Record<string, unknown>]> = {
   slack: ["slack_search_channels", { keywords: ["general"], limit: 1, response_format: "concise" }],
   "google-drive": ["list_recent_files", { pageSize: 1, excludeContentSnippets: true }],
   sentry: ["find_organizations", {}],
-  datadog: ["search_datadog_monitors", { query: "tag:team:example", max_tokens: 500, telemetry: { intent: "connectors-axi doctor liveness check" } }],
+  datadog: ["search_datadog_monitors", { query: "tag:team:example", max_tokens: 500, telemetry: { intent: "plugboard doctor liveness check" } }],
 };
 
 const KNOWN_MESSAGE_TYPES = new Set(["control_response", "system"]);
@@ -75,7 +75,7 @@ export async function doctor(argv: string[]) {
     add("policy", dead.length || unknownAliases.length ? "warn" : "ok",
       `${policy.source ? collapseHome(policy.source) : "built-in default"}; profile ${profile} (${prof.mode})`
       + (dead.length ? `; entries matching nothing: ${dead.join(", ")}` : "") + (unknownAliases.length ? `; aliases to unknown connectors: ${unknownAliases.join(", ")}` : ""),
-      "Edit policy.toml, or run `connectors-axi refresh` if the tools are new");
+      "Edit policy.toml, or run `plugboard refresh` if the tools are new");
   } catch (error) { add("policy", "fail", (error as Error).message, "Fix policy.toml"); }
   const required = prof ? requiredConnectors(prof) : [];
 
@@ -176,7 +176,7 @@ export async function doctor(argv: string[]) {
   // 11: audit
   const unresolved = unresolvedKeys();
   add("audit", unresolved.length ? "warn" : "ok", unresolved.length ? `${unresolved.length} write(s) with unknown outcome: ${unresolved.map(u => u.key).join(", ")}` : "no unresolved writes",
-    "Check each destination, then `connectors-axi audit resolve <key> --sent|--not-sent`");
+    "Check each destination, then `plugboard audit resolve <key> --sent|--not-sent`");
 
   // A version is "tested" once protocol, cost and live reads pass on it.
   const failedCore = checks.some(c => c.status === "fail" && (c.check === "protocol" || c.check === "zero-cost" || c.check.startsWith("read:")));
