@@ -1,0 +1,199 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+import { unresolvedKeys } from "./audit";
+import { captureConnectorSchemas } from "./bridge/capture";
+import type { ConnectorServer } from "./bridge/client";
+import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveIndex, toolHash } from "./cache";
+import { BIN, invoke, prepare, profileName } from "./call";
+import { authStatus, claudePath, claudeVersion, connect, costGuard } from "./claude";
+import { EXIT } from "./errors";
+import { collapseHome, stateDir } from "./paths";
+import { classify, loadPolicy, matches, profileFor, type Policy, type Profile } from "./policy";
+
+type Status = "ok" | "warn" | "fail" | "info";
+type Check = { check: string; status: Status; detail: string };
+
+/** Cheap read per connector, used by check 10. Each is asserted read-class before it runs. */
+const LIVE_READS: Record<string, [string, Record<string, unknown>]> = {
+  gmail: ["list_labels", {}],
+  "google-calendar": ["list_calendars", {}],
+  slack: ["slack_search_channels", { keywords: ["general"], limit: 1, response_format: "concise" }],
+  "google-drive": ["list_recent_files", { pageSize: 1, excludeContentSnippets: true }],
+  sentry: ["find_organizations", {}],
+  datadog: ["search_datadog_monitors", { query: "tag:team:example", max_tokens: 500, telemetry: { intent: "connectors-axi doctor liveness check" } }],
+};
+
+const KNOWN_MESSAGE_TYPES = new Set(["control_response", "system"]);
+export const doctorPath = () => join(stateDir(), "doctor.json");
+export const lastDoctor = (): Record<string, any> | undefined =>
+  existsSync(doctorPath()) ? JSON.parse(readFileSync(doctorPath(), "utf8")) : undefined;
+
+/** Connectors a profile names explicitly: those are required; `*:` patterns require nothing. */
+export const requiredConnectors = (profile: Profile) =>
+  [...new Set(profile.allow.map(p => p.slice(0, p.indexOf(":"))).filter(id => !id.includes("*")))];
+
+export async function doctor(argv: string[]) {
+  const { values } = parseArgs({ args: argv, strict: true, options: {
+    as: { type: "string" }, schemas: { type: "boolean" }, strict: { type: "boolean" }, out: { type: "string" }
+  } });
+  const policy: Policy = loadPolicy();
+  const profile = profileName(values as Record<string, string>);
+  const checks: Check[] = [];
+  const help: string[] = [];
+  const blind = new Set<string>();
+  let broken = false;
+  const add = (check: string, status: Status, detail: string, remedy?: string) => {
+    checks.push({ check, status, detail });
+    if (remedy && status !== "ok" && status !== "info") help.push(remedy);
+  };
+
+  // 1–3: binary, version, login (no protocol needed)
+  const path = claudePath(policy);
+  const version = existsSync(path) ? claudeVersion(path) : undefined;
+  add("binary", version ? "ok" : "fail", version ? collapseHome(path) : `${collapseHome(path)} missing or not runnable`, "Install Claude Code, or set claude_path in policy.toml");
+  const index = loadIndex();
+  const tested = index?.testedVersions ?? [];
+  const lastGood = tested.at(-1);
+  if (version) add("version", tested.includes(version) ? "ok" : "warn", tested.includes(version) ? `${version} (tested)` : `${version} untested; checks below decide`,
+    lastGood ? `Last good: ${lastGood}; to roll back set claude_path = "~/.local/share/claude/versions/${lastGood}"` : undefined);
+  if (lastGood && !existsSync(join(process.env.HOME ?? "", ".local/share/claude/versions", lastGood)))
+    add("rollback", "warn", `last good version ${lastGood} is no longer on disk`);
+  const auth = version ? authStatus(path) : undefined;
+  add("login", auth?.loggedIn ? "ok" : "fail", auth ? (auth.loggedIn ? `logged in (${auth.method ?? "?"})` : "not logged in") : "auth status unavailable", "Run `claude` and /login");
+
+  // 9: policy (no spawn)
+  let prof: Profile | undefined;
+  try {
+    prof = profileFor(policy, profile);
+    const ids = manifestIds();
+    const tools = ids.flatMap(id => (loadManifest(id)?.tools ?? []).map(t => ({ id, t })));
+    const dead = [...prof.allow, ...prof.deny, ...policy.overrides.read, ...policy.overrides.write]
+      .filter(p => !tools.some(({ id, t }) => matches(p, id, t.name)));
+    const known = Object.keys(index?.connectors ?? {});
+    const unknownAliases = Object.entries(policy.aliases).filter(([, id]) => !known.includes(id)).map(([a]) => a);
+    add("policy", dead.length || unknownAliases.length ? "warn" : "ok",
+      `${policy.source ? collapseHome(policy.source) : "built-in default"}; profile ${profile} (${prof.mode})`
+      + (dead.length ? `; entries matching nothing: ${dead.join(", ")}` : "") + (unknownAliases.length ? `; aliases to unknown connectors: ${unknownAliases.join(", ")}` : ""),
+      "Edit policy.toml, or run `connectors-axi refresh` if the tools are new");
+  } catch (error) { add("policy", "fail", (error as Error).message, "Fix policy.toml"); }
+  const required = prof ? requiredConnectors(prof) : [];
+
+  // 4–8, 10: protocol, cost, connectors, drift, live reads
+  let readyMs: number | undefined;
+  let costText: string | undefined;
+  if (version && auth?.loggedIn !== false) {
+    const started = Date.now();
+    let client;
+    try {
+      client = await connect(policy);
+      let servers: ConnectorServer[] = [];
+      try {
+        servers = await client.waitForServers();
+        readyMs = Date.now() - started;
+        const types = Object.keys(client.messageTypes);
+        const unknown = types.filter(t => !KNOWN_MESSAGE_TYPES.has(t));
+        add("protocol", unknown.length ? "warn" : "ok", `initialize + mcp_status ok in ${(readyMs / 1000).toFixed(1)}s${unknown.length ? `; new message types: ${unknown.join(", ")}` : ""}`);
+      } catch (error) {
+        broken = true;
+        add("protocol", "fail", `mcp_status: ${(error as Error).message}`, "Pin claude_path to the last good version, or wait for a bridge fix");
+      }
+      // 6: connectors
+      for (const server of servers) {
+        const id = connectorId(server.name);
+        const needed = required.includes(id);
+        if (server.status === "connected" || !needed) continue;
+        blind.add(id);
+        add(`connector:${id}`, "fail", `${server.status} (required by ${profile})`,
+          `Reconnect ${server.name.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
+      }
+      for (const id of required) if (!servers.some(s => connectorId(s.name) === id)) {
+        blind.add(id);
+        add(`connector:${id}`, "fail", `not listed by Claude Code (required by ${profile})`, `Check the connector name in policy.toml`);
+      }
+      const connected = servers.filter(s => s.status === "connected").length;
+      const idle = servers.filter(s => s.status !== "connected" && !required.includes(connectorId(s.name))).map(s => connectorId(s.name));
+      add("connectors", blind.size ? "fail" : "ok", `${connected}/${servers.length} connected${blind.size ? `; blind: ${[...blind].join(", ")}` : ""}`
+        + (idle.length ? `; not connected, not required: ${idle.join(", ")}` : ""));
+      // 7: tool drift against the cache
+      for (const server of servers.filter(s => s.status === "connected")) {
+        const id = connectorId(server.name);
+        const manifest = loadManifest(id);
+        if (!manifest) { add(`drift:${id}`, "warn", "not in the cache", `Run \`${BIN} refresh ${id}\``); continue; }
+        const live = new Map(server.tools.map(t => [t.name, annotationsOf(t)]));
+        const cached = new Map(manifest.tools.map(t => [t.name, t.annotations]));
+        const added = [...live.keys()].filter(n => !cached.has(n) && !manifest.hidden?.includes(n));
+        const removed = [...cached.keys()].filter(n => !live.has(n));
+        const lostRead = [...cached].filter(([n, a]) => a?.readOnlyHint === true && live.has(n) && live.get(n)?.readOnlyHint !== true).map(([n]) => n);
+        const gainedRead = [...cached].filter(([n, a]) => a?.readOnlyHint !== true && live.get(n)?.readOnlyHint === true).map(([n]) => n);
+        if (!added.length && !removed.length && !lostRead.length && !gainedRead.length) continue;
+        add(`drift:${id}`, "warn", [
+          added.length && `+${added.length} (${added.slice(0, 5).join(", ")})`, removed.length && `-${removed.length} (${removed.slice(0, 5).join(", ")})`,
+          lostRead.length && `LOST readOnlyHint, now write: ${lostRead.join(", ")}`, gainedRead.length && `gained readOnlyHint (stays write until refresh): ${gainedRead.join(", ")}`,
+        ].filter(Boolean).join("; "), `Run \`${BIN} refresh ${id}\` to accept the new tool list`);
+      }
+      // 8: schema drift (--schemas)
+      if (values.schemas && !broken) {
+        try {
+          const { schemas } = await captureConnectorSchemas({ claudePath: path });
+          const changed: string[] = [];
+          for (const id of manifestIds()) for (const t of loadManifest(id)?.tools ?? []) {
+            const fresh = schemas.find(s => s.name === t.sourceName);
+            if (fresh && toolHash({ ...t, inputSchema: fresh.inputSchema as Record<string, any> }) !== toolHash(t)) changed.push(`${id}:${t.name}`);
+          }
+          const used = prof ? changed.filter(k => prof!.allow.some(p => matches(p, k.split(":")[0]!, k.split(":")[1]!))) : [];
+          add("schema-drift", changed.length ? "warn" : "ok", changed.length ? `${changed.length} changed (${used.length} used by ${profile}): ${changed.slice(0, 8).join(", ")}` : `${schemas.length} schemas unchanged`,
+            `Run \`${BIN} refresh\`, then check transforms for changed parameters`);
+        } catch (error) { broken = true; add("schema-drift", "fail", `capture failed: ${(error as Error).message}`); }
+      }
+      // 10: one cheap read per required connector
+      for (const id of required) {
+        const probe = LIVE_READS[id];
+        const manifest = loadManifest(id);
+        const tool = probe && manifest?.tools.find(t => t.name === probe[0]);
+        if (blind.has(id) || !tool || !manifest || broken) continue;
+        if (classify(policy, id, tool) !== "read") { add(`read:${id}`, "fail", `${tool.name} is not read-class; probe skipped`); continue; }
+        try {
+          const t0 = Date.now();
+          await invoke(client, prepare(policy, manifest, tool, probe[1], false), 30_000);
+          add(`read:${id}`, "ok", `${tool.name} in ${Date.now() - t0}ms`);
+        } catch (error) {
+          blind.add(id);
+          add(`read:${id}`, "fail", (error as Error).message.slice(0, 160), `Reconnect ${manifest.connectorName.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
+        }
+      }
+      // 5: zero cost (after every call above)
+      try {
+        costText = await costGuard(client);
+        add("zero-cost", "ok", "$0.0000, 0 tokens");
+      } catch (error) { broken = true; add("zero-cost", "fail", (error as Error).message, "Stop: a model was reached. Investigate before using the bridge again"); }
+    } catch (error) {
+      broken = true;
+      add("protocol", "fail", (error as Error).message, "Pin claude_path to the last good version, or wait for a bridge fix");
+    } finally { await client?.close(); }
+  }
+
+  // 11: audit
+  const unresolved = unresolvedKeys();
+  add("audit", unresolved.length ? "warn" : "ok", unresolved.length ? `${unresolved.length} write(s) with unknown outcome: ${unresolved.map(u => u.key).join(", ")}` : "no unresolved writes",
+    "Check each destination, then `connectors-axi audit resolve <key> --sent|--not-sent`");
+
+  // A version is "tested" once protocol, cost and live reads pass on it.
+  const failedCore = checks.some(c => c.status === "fail" && (c.check === "protocol" || c.check === "zero-cost" || c.check.startsWith("read:")));
+  if (version && readyMs !== undefined && costText && !failedCore && index && !tested.includes(version)) saveIndex({ ...index, testedVersions: [...tested, version] });
+
+  const warned = checks.some(c => c.status === "warn");
+  const otherFail = checks.some(c => c.status === "fail");
+  const exitCode = broken || !version ? EXIT.BRIDGE_BROKEN : blind.size ? EXIT.PARTIAL : otherFail ? 1 : warned && values.strict ? EXIT.PARTIAL : EXIT.OK;
+  const result = {
+    claude: version ? `${version}${tested.includes(version) ? " (tested)" : ""}` : "missing",
+    bridge: broken || !version ? "broken" : `ok${readyMs ? ` (ready ${(readyMs / 1000).toFixed(1)}s, $0.0000, 0 tokens)` : ""}`,
+    profile, checks, blind: [...blind], exit: exitCode, at: new Date().toISOString(),
+  };
+  mkdirSync(stateDir(), { recursive: true });
+  writeFileSync(doctorPath(), JSON.stringify(result));
+  const remedies = [...new Set(help)];
+  const out = values.out === "json" ? JSON.stringify({ ...result, help: remedies }) : { ...result, ...(remedies.length ? { help: remedies } : {}) };
+  return { out, exitCode };
+}
+

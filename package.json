@@ -1,0 +1,28 @@
+{
+  "name": "connectors-axi",
+  "version": "0.1.0",
+  "description": "claude.ai connector tools as shell commands, at zero model tokens",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "connectors-axi": "./dist/connectors-axi"
+  },
+  "scripts": {
+    "build": "bun build --target=bun --banner='#!/usr/bin/env bun' --outfile=dist/connectors-axi ./src/cli.ts && chmod +x dist/connectors-axi",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "link": "bun run build && bun link"
+  },
+  "dependencies": {
+    "@toon-format/toon": "2.3.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "axi-sdk-js": "0.1.13",
+    "chrono-node": "^2.9.0",
+    "filtrex": "^3.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.1",
+    "typescript": "^5.7.0"
+  }
+}

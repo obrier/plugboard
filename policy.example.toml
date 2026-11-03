@@ -1,0 +1,50 @@
+# connectors-axi policy. Path: $CONNECTORS_AXI_POLICY, else ~/.config/connectors-axi/policy.toml.
+# Patterns are connector:tool with * globs. Globs only ever grant READ tools; a write tool must be
+# named exactly in a profile with mode = "write". deny beats allow. No profile → "default".
+version = 1
+# claude_path = "~/.local/share/claude/versions/2.1.312"   # rollback lever after a breaking update
+
+[aliases]           # merged over the built-in ones (cal, gcal, drive, docs, sheets, slides, dd, jira)
+
+[overrides]
+read  = []          # unannotated tools that only read; say why on each line
+write = []          # tools annotated read-only that are not
+
+[transforms]        # reads only: these parameters accept today, -2d, 2026-11-03, monday 9am
+"slack:slack_search_public.after" = "unix"
+"slack:slack_search_public.before" = "unix"
+"slack:slack_search_public_and_private.after" = "unix"
+"slack:slack_search_public_and_private.before" = "unix"
+"slack:slack_read_channel.oldest" = "unix"
+"slack:slack_read_channel.latest" = "unix"
+"google-calendar:list_events.startTime" = "rfc3339"
+"google-calendar:list_events.endTime" = "rfc3339"
+
+[limits]
+concurrency = 4
+per_connector = 2
+
+[profiles.default]  # interactive use: every read tool, no writes
+mode = "read"
+allow = ["*:*"]
+
+[profiles.gather]
+mode = "read"
+allow = [
+  "slack:slack_search_*", "slack:slack_read_*", "slack:slack_get_reactions",
+  "gmail:search_threads", "gmail:get_thread", "gmail:get_message", "gmail:list_labels",
+  "google-calendar:list_events", "google-calendar:get_event", "google-calendar:search_events", "google-calendar:list_calendars",
+  "google-drive:search_files", "google-drive:read_file_content", "google-drive:list_recent_files",
+  "datadog:search_datadog_*", "datadog:get_datadog_*",
+  "sentry:search_*", "sentry:find_*",
+]
+deny = ["*:*_draft*"]
+
+[profiles.executor]
+mode = "write"
+allow = [
+  "slack:slack_send_message",   # writes: exact names only
+  "slack:slack_read_thread",    # re-verify right before sending
+]
+allow_destructive = false
+allow_in_agent = false
