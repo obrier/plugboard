@@ -10,6 +10,7 @@ import { connect, costGuard } from "./claude";
 import { classify as classifyError, fail } from "./errors";
 import { mergeArgs, parseFlags, summaryOf, toolHelp, typeOf } from "./flags";
 import { defaultFormat, errorText, OUT_FORMATS, parseList, render, shape, unwrap } from "./output";
+import { loadUsage } from "./usage";
 import { classify, decide, loadPolicy, profileFor, resolveConnector, type Policy, type ToolClass } from "./policy";
 import { formatTime, parseTime } from "./time";
 
@@ -141,7 +142,11 @@ export async function runTool(connectorRef: string, args: string[]) {
   const policy = loadPolicy();
   const manifest = requireManifest(policy, connectorRef);
   const [toolRef, ...rest] = args;
-  if (!toolRef || toolRef === "--help") return listTools(policy, manifest);
+  if (!toolRef || toolRef.startsWith("--")) {
+    const unknown = args.filter(a => a !== "--all" && a !== "--help");
+    if (unknown.length) throw fail("VALIDATION_ERROR", `unknown flag ${unknown[0]} for \`${BIN} ${manifest.id}\``, [`usage: ${BIN} ${manifest.id} [--all]`]);
+    return listTools(policy, manifest, { all: args.includes("--all") });
+  }
   const tool = requireTool(manifest, toolRef);
   const parsed = parseFlags(rest, tool.inputSchema);
   const g = parsed.globals;
@@ -227,13 +232,27 @@ async function runWrite(policy: Policy, p: Prepared, profile: string, g: Record<
   } finally { await client.close(); }
 }
 
-export function listTools(policy: Policy, manifest: Manifest) {
-  const tools = manifest.tools.map(t => {
-    const cls = classify(policy, manifest.id, t);
-    return { name: shortName(manifest.id, t.name), class: cls + (t.annotations?.destructiveHint ? "!" : ""), summary: summaryOf(t.description, 90) };
-  }).sort((a, b) => a.class.localeCompare(b.class) || a.name.localeCompare(b.name));
+/** With usage data (`plugboard usage`), used tools come first and the list is capped; --all shows everything. */
+export function listTools(policy: Policy, manifest: Manifest, o: { all?: boolean; cap?: number } = {}) {
+  const cap = o.cap ?? 20;
+  const counts = loadUsage()?.counts ?? {};
+  const used = (name: string) => counts[`${manifest.id}:${name}`] ?? 0;
+  const ranked = Object.keys(counts).some(k => k.startsWith(`${manifest.id}:`));
+  const all = manifest.tools.map(t => ({
+    name: shortName(manifest.id, t.name),
+    class: classify(policy, manifest.id, t) + (t.annotations?.destructiveHint ? "!" : ""),
+    ...(ranked ? { uses: used(t.name) } : {}),
+    summary: summaryOf(t.description, 90),
+  })).sort((a, b) => ((b.uses ?? 0) - (a.uses ?? 0)) || a.class.localeCompare(b.class) || a.name.localeCompare(b.name));
+  const tools = ranked && !o.all ? all.slice(0, cap) : all;
+  const hidden = all.length - tools.length;
   return {
     connector: manifest.id, name: manifest.connectorName, captured: manifest.capturedAt, tools,
-    help: [`Run \`${BIN} ${manifest.id} <tool> --help\` for its flags`, "class: read | write (write! = destructive). Writes need the executor profile"],
+    help: [
+      ...(hidden ? [`${hidden} more tools: add --all, or \`${BIN} find <words>\``] : []),
+      ...(ranked ? [] : [`Run \`${BIN} usage\` to rank tools by how often your Claude Code sessions call them`]),
+      `Run \`${BIN} ${manifest.id} <tool> --help\` for its flags`,
+      "class: read | write (write! = destructive). Writes need the executor profile",
+    ],
   };
 }

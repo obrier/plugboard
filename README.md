@@ -9,6 +9,7 @@ plugboard slack search-public --help         # flags generated from the tool's J
 plugboard cal list-events --calendar-id primary --start-time today --end-time tomorrow --items events --select summary,start.dateTime
 plugboard batch --as gather < calls.jsonl > results.jsonl
 plugboard doctor --as gather                 # preflight gate: exit 0 | 7 (some blind) | 10 (bridge broken)
+plugboard usage                              # rank tools by your Claude Code sessions' calls; listings show the top 20
 plugboard refresh                            # recapture schemas into ~/.cache/plugboard (~6 s)
 ```
 

@@ -9,6 +9,7 @@ import { doctor, lastDoctor } from "./doctor";
 import { EXIT, exitFor, fail } from "./errors";
 import { summaryOf } from "./flags";
 import { mode, plainText } from "./output";
+import { loadUsage, scanUsage } from "./usage";
 import { classify, loadPolicy, matches, profileFor } from "./policy";
 import pkg from "../package.json";
 
@@ -17,7 +18,7 @@ const renderError = (message: string, code: string, help: string[] = []) => enco
 export const DESCRIPTION = "claude.ai connector tools (Slack, Gmail, Calendar, Drive, Datadog, Sentry, …) as shell commands, at zero model tokens";
 
 const TOP_LEVEL_HELP = `usage: ${BIN} <connector> <tool> [--param value …] [global flags]
-commands[9]:
+commands[10]:
   <connector>          List a connector's tools with their class (read | write)
   <connector> <tool>   Call a tool; --help shows its flags, generated from its schema
   find <words>         Search all cached tools by name and description
@@ -26,6 +27,7 @@ commands[9]:
   refresh [id…]        Recapture tool schemas into the cache (~4 s)
   policy [--as p]      What a profile may call
   audit                Write log: audit [--unresolved] [--since 1d] | audit resolve <key> --sent|--not-sent
+  usage [--days 30]    Rank tools by how often your Claude Code sessions called them (reads transcripts, no spawn)
   setup hooks          Show the home view at the start of Claude Code, Codex and OpenCode sessions (opt-in; --project, --remove)
 global flags (after the tool):
   --axi  --as <profile>  --select a,b.c  --where '<expr>'  --items <path>  --out text|toon|json|md|raw  --full
@@ -54,6 +56,7 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   refresh: `usage: ${BIN} refresh [connector…]\n  Recaptures schemas (one capture, ~4 s) and replaces each connector that is connected; others keep their cached tools.\n`,
   policy: `usage: ${BIN} policy [--as <profile>] [<connector>]\n  Shows a profile's mode and what it may call; with a connector, lists its allowed tools.\n`,
+  usage: `usage: ${BIN} usage [--days 30] [--top 15]\n  Counts connector tool calls in ~/.claude/projects transcripts (actual tool_use blocks only) and saves them to the cache.\n  Listings then show the most-used tools first, capped at 20 (--all for the rest); find ranks used tools higher.\n`,
   setup: `usage: ${BIN} setup hooks [--project] [--remove]\n  Opt-in: installs a session-start hook that prints the home view (cache only, no spawn) into Claude Code, Codex and OpenCode.\n  --project: this repository only. --remove: uninstall.\n`,
   audit: `usage: ${BIN} audit [--unresolved] [--since 1d] | audit resolve <write-key> --sent|--not-sent\n  The write log: one line per attempt and outcome, with payload hashes, never payloads.\n`,
 };
@@ -87,13 +90,27 @@ function find(args: string[]) {
   const words = positionals.join(" ").toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) throw fail("VALIDATION_ERROR", "find needs some words", [`${BIN} find rollout version tag`]);
   const policy = loadPolicy();
+  const counts = loadUsage()?.counts ?? {};
   const hits = manifestIds().flatMap(id => (loadManifest(id)?.tools ?? []).map(t => {
     const name = t.name.toLowerCase();
     const text = `${name} ${(t.description ?? "").toLowerCase()}`;
     const score = words.reduce((s, w) => s + (name.includes(w) ? 3 : text.includes(w) ? 1 : 0), 0);
-    return { connector: id, tool: shortName(id, t.name), class: classify(policy, id, t), summary: summaryOf(t.description, 90), score };
+    const uses = counts[`${id}:${t.name}`] ?? 0;
+    // Usage only breaks ties and nudges: a tool you call often ranks above an equally good match.
+    return { connector: id, tool: shortName(id, t.name), class: classify(policy, id, t), uses, summary: summaryOf(t.description, 90), score: score && score + Math.log2(uses + 1) / 4 };
   })).filter(h => h.score > 0).sort((a, b) => b.score - a.score).slice(0, Number(values.limit ?? 15));
   return { results: hits.map(({ score: _score, ...h }) => h), help: [`Run \`${BIN} <connector> <tool> --help\` for flags`] };
+}
+
+function usageCommand(args: string[]) {
+  const { values } = parseArgs({ args, strict: true, options: { days: { type: "string" }, top: { type: "string" } } });
+  const days = Number(values.days ?? 30);
+  if (!Number.isInteger(days) || days < 1) throw fail("VALIDATION_ERROR", "--days must be a positive whole number");
+  const usage = scanUsage(days);
+  const top = Object.entries(usage.counts).sort((a, b) => b[1] - a[1]).slice(0, Number(values.top ?? 15))
+    .map(([key, uses]) => ({ connector: key.split(":")[0]!, tool: shortName(key.split(":")[0]!, key.slice(key.indexOf(":") + 1)), uses }));
+  return { days, transcripts: usage.files, calls: usage.calls, top,
+    help: [`Saved to the cache: \`${BIN} <connector>\` now lists the most-used tools first (20 at most; --all for the rest)`] };
 }
 
 function policyCommand(args: string[]) {
@@ -180,7 +197,7 @@ async function main() {
     try { process.stdout.write(`${plainText(home())}\n`); } catch (error) { process.exitCode = reportError(error); }
     return;
   }
-  const builtins = new Set(["find", "batch", "doctor", "refresh", "policy", "audit", "setup", "update"]);
+  const builtins = new Set(["find", "batch", "doctor", "refresh", "policy", "audit", "setup", "usage", "update"]);
   // No cache at all: the first connector call captures once.
   if (argv[0] && !argv[0].startsWith("-") && !builtins.has(argv[0]) && !loadIndex()) {
     try { await refresh(loadPolicy()); } catch { /* the call below reports what is missing */ }
@@ -193,6 +210,7 @@ async function main() {
   Object.assign(commands, {
     find,
     policy: policyCommand,
+    usage: usageCommand,
     audit: auditCommand,
     setup: (args: string[]) => setupCommand(args),
     refresh: (args: string[]) => refresh(loadPolicy(), args),

@@ -238,3 +238,32 @@ test("a tool's own idempotency_key is filled from --write-key, in the plan hash 
   expect((await run([...note, "--as", "executor", "--write", "--write-key", "out-7", "--expect-hash", plan.hash])).code).toBe(0);
   expect(calls()[0].args).toEqual({ text: "n", idempotency_key: "out-7" });
 });
+
+test("usage: counts only real tool calls, maps UUID-named connectors by tool name, then ranks and caps listings", async () => {
+  const dir = join(root, "transcripts/project");
+  mkdirSync(dir, { recursive: true });
+  const call = (name: string) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t", name, input: {} }] } });
+  writeFileSync(join(dir, "s.jsonl"), [
+    call("mcp__claude_ai_Slack__slack_send_message"),
+    call("mcp__e9b0846e-2f83-452c-a4e3-1999125e1954__slack_send_message"), // desktop: UUID instead of the connector name
+    call("mcp__e9b0846e-2f83-452c-a4e3-1999125e1954__slack_search_public"),
+    call("mcp__other__unknown_tool"),
+    JSON.stringify({ type: "user", message: { content: "deferred tools: mcp__claude_ai_Slack__slack_delete_message" } }), // a listing, not a call
+  ].join("\n"));
+  const env = { PLUGBOARD_TRANSCRIPTS: join(root, "transcripts") };
+  const usage = await run(["usage", "--axi"], { env });
+  expect(usage.all).toContain("calls: 3");
+  const list = await run(["slack", "--axi"], { env });
+  expect(list.all).toMatch(/send-message,write,2,[^\n]*\n\s+search-public,read,1,/);
+  const { listTools } = await import("../src/call");
+  const { loadManifest } = await import("../src/cache");
+  const { parsePolicy } = await import("../src/policy");
+  process.env.PLUGBOARD_CACHE = join(root, "cache");
+  try {
+    const capped = listTools(parsePolicy("", "p"), loadManifest("slack")!, { cap: 2 });
+    expect(capped.tools.map(t => t.name)).toEqual(["send-message", "search-public"]);
+    expect(capped.help[0]).toContain("2 more tools");
+    expect(listTools(parsePolicy("", "p"), loadManifest("slack")!, { cap: 2, all: true }).tools).toHaveLength(4);
+  } finally { delete process.env.PLUGBOARD_CACHE; }
+  expect((await run(["slack", "--bogus"])).code).toBe(2);
+});
