@@ -72,6 +72,8 @@ bun run typecheck && bun run link
 
 ## Release (Homebrew)
 
+plugboard ships only as compiled binaries through Homebrew. It is not published to npm (`package.json` stays `"private": true`).
+
 `scripts/release.sh` runs the tests, then compiles standalone binaries with `bun build --compile` for darwin-arm64/x64 and linux-arm64/x64. It packs each one with its LICENSE, README and example policy, and renders `release/<version>/plugboard.rb` from `packaging/homebrew/plugboard.rb.in`. It publishes nothing. Then:
 
 ```bash
