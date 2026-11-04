@@ -7,12 +7,27 @@ import type { ConnectorServer } from "./bridge/client";
 import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveIndex, toolHash } from "./cache";
 import { BIN, invoke, prepare, profileName } from "./call";
 import { authStatus, claudePath, claudeVersion, connect, costGuard } from "./claude";
+import { AxiError } from "axi-sdk-js";
 import { EXIT } from "./errors";
 import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, stateDir, windowsClaudeFromWSL } from "./platform";
 import { classify, DEFAULT_ALIASES, loadPolicy, matches, probeTools, profileFor, type Policy, type Profile } from "./policy";
 
 type Status = "ok" | "warn" | "fail" | "info";
 type Check = { check: string; status: Status; detail: string };
+
+/** Try probe tools in order. Only a connector rejecting a bare call moves on to the next tool;
+ * a timeout, auth failure or rate limit means the connector itself is down. */
+export async function probe<T extends { name: string }>(tools: T[], call: (tool: T) => Promise<void>): Promise<{ tool?: T; ms?: number; error?: string }> {
+  let error = "";
+  for (const tool of tools) {
+    const t0 = Date.now();
+    try { await call(tool); return { tool, ms: Date.now() - t0 }; } catch (e) {
+      error = `${tool.name}: ${(e as Error).message}`;
+      if (e instanceof AxiError && e.code !== "UPSTREAM_ERROR" && e.code !== "VALIDATION_ERROR") break;
+    }
+  }
+  return { error };
+}
 
 const KNOWN_MESSAGE_TYPES = new Set(["control_response", "system"]);
 export const doctorPath = () => join(stateDir(), "doctor.json");
@@ -149,21 +164,13 @@ export async function doctor(argv: string[]) {
       // 10: one cheap read per required connector: the first of its argument-free read tools that succeeds
       for (const id of required) {
         const manifest = loadManifest(id);
-        const tools = manifest ? probeTools(policy, id, manifest.tools) : [];
+        const tools = manifest ? probeTools(policy, profile, id, manifest.tools) : [];
         if (blind.has(id) || !manifest || !tools.length || broken) continue;
-        let lastError = "";
-        for (const tool of tools) {
-          try {
-            const t0 = Date.now();
-            await invoke(client, prepare(policy, manifest, tool, {}, false), 30_000);
-            add(`read:${id}`, "ok", `${tool.name} in ${Date.now() - t0}ms`);
-            lastError = "";
-            break;
-          } catch (error) { lastError = `${tool.name}: ${(error as Error).message}`; }
-        }
-        if (lastError) {
+        const result = await probe(tools, tool => invoke(client!, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
+        if (result.tool) add(`read:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
+        else {
           blind.add(id);
-          add(`read:${id}`, "fail", lastError.slice(0, 160), `Reconnect ${manifest.connectorName.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
+          add(`read:${id}`, "fail", (result.error ?? "").slice(0, 160), `Reconnect ${manifest.connectorName.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
         }
       }
       // 5: zero cost (after every call above)

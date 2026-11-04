@@ -196,6 +196,13 @@ test("doctor probes a required connector with one of its own argument-free read 
   expect(calls().map(c => c.tool)).toContain("mcp__claude_ai_Slack__slack_search_public");
 });
 
+test("doctor never probes a tool the profile denies", async () => {
+  writeFileSync(join(root, "policy.toml"), `${POLICY}\n[profiles.narrow]\nmode = "read"\nallow = ["slack:*"]\ndeny = ["slack:slack_search_public"]\n`);
+  const result = JSON.parse((await run(["doctor", "--as", "narrow", "--out", "json"])).stdout);
+  expect(calls().map(c => c.tool)).not.toContain("mcp__claude_ai_Slack__slack_search_public");
+  expect(result.checks.find((c: { check: string }) => c.check === "read:slack")).toBeUndefined();
+});
+
 test("doctor warns about aliases the policy defines, never about built-in ones", async () => {
   const policyCheck = async () => JSON.parse((await run(["doctor", "--out", "json"])).stdout).checks.find((c: { check: string }) => c.check === "policy").detail as string;
   expect(await policyCheck()).not.toContain("aliases to unknown connectors");

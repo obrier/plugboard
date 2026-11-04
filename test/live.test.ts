@@ -25,7 +25,7 @@ test.skipIf(!process.env.LIVE)("live reads succeed at zero cost, and doctor pass
   const failures: string[] = [];
   let tried = 0;
   for (const id of connected) {
-    const tools = probeTools(policy, id, loadManifest(id)?.tools ?? []);
+    const tools = probeTools(policy, process.env.PLUGBOARD_PROFILE ?? "default", id, loadManifest(id)?.tools ?? []);
     if (!tools.length) continue;
     tried++;
     const errors: string[] = [];

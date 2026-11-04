@@ -9,6 +9,7 @@ import { markdownOf, render, shape, unwrap } from "../src/output";
 import { classify, decide, parsePolicy } from "../src/policy";
 import { formatTime, parseTime } from "../src/time";
 import { setupCommand } from "../src/cli";
+import { probe } from "../src/doctor";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -121,6 +122,24 @@ describe("policy", () => {
     expect(code(() => parsePolicy("[profiles.x]\nmode = 'admin'", "p"))).toBe("VALIDATION_ERROR");
     expect(code(() => parsePolicy("[profiles.x]\nallow = ['nocolon']", "p"))).toBe("VALIDATION_ERROR");
     expect(code(() => parsePolicy("[transforms]\n'a:b.c' = 'weekday'", "p"))).toBe("VALIDATION_ERROR");
+  });
+});
+
+describe("doctor probe", () => {
+  const tools = [{ name: "a" }, { name: "b" }];
+  test("moves to the next tool only when the connector rejects the call", async () => {
+    const tried: string[] = [];
+    const result = await probe(tools, async t => { tried.push(t.name); if (t.name === "a") throw new AxiError("bad args", "UPSTREAM_ERROR", []); });
+    expect(tried).toEqual(["a", "b"]);
+    expect(result.tool?.name).toBe("b");
+  });
+  test("stops at a timeout or auth failure: the connector is down", async () => {
+    for (const code of ["TIMEOUT", "AUTH_REQUIRED", "RATE_LIMITED"]) {
+      const tried: string[] = [];
+      const result = await probe(tools, async t => { tried.push(t.name); throw new AxiError("down", code, []); });
+      expect(tried).toEqual(["a"]);
+      expect(result.error).toContain("a: down");
+    }
   });
 });
 

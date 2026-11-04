@@ -95,9 +95,11 @@ export function classify(policy: Policy, id: string, tool: Pick<ManifestTool, "n
   return tool.annotations?.readOnlyHint === true && tool.annotations.destructiveHint !== true ? "read" : "write";
 }
 
-/** A connector's read tools that need no arguments: cheap liveness probes. Some still fail when called bare, so try them in order. */
-export const probeTools = (policy: Policy, id: string, tools: ManifestTool[]) =>
-  tools.filter(tool => classify(policy, id, tool) === "read" && !(tool.inputSchema.required ?? []).length);
+/** The read tools a profile may call that need no arguments: cheap liveness probes. Some still fail when called bare, so try them in order. */
+export function probeTools(policy: Policy, profileName: string, id: string, tools: ManifestTool[]) {
+  const allowed = (tool: ManifestTool) => { try { decide(policy, profileName, id, tool, false); return true; } catch { return false; } };
+  return tools.filter(tool => classify(policy, id, tool) === "read" && !(tool.inputSchema.required ?? []).length && allowed(tool));
+}
 
 export function profileFor(policy: Policy, name: string): Profile {
   const profile = policy.profiles[name];
