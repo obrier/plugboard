@@ -129,8 +129,9 @@ export function markdownOf(value: unknown): string | undefined {
   return undefined;
 }
 
-/** Plain output by default; `--axi` (or PLUGBOARD_AXI=1) switches to the AXI/TOON output for agents. */
-export const mode = { axi: process.env.PLUGBOARD_AXI === "1" };
+/** Plain output for people; AXI/TOON for agents: `--axi`, PLUGBOARD_AXI=1, or inside Claude Code (CLAUDECODE set),
+ * the same signal the write refusal reads. PLUGBOARD_AXI=0 turns it off there. */
+export const mode = { axi: process.env.PLUGBOARD_AXI === "1" || (!!process.env.CLAUDECODE && process.env.PLUGBOARD_AXI !== "0") };
 export const OUT_FORMATS = ["text", "toon", "json", "md", "raw"];
 export const defaultFormat = () => (mode.axi ? "toon" : "text");
 

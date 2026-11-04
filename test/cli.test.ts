@@ -234,6 +234,13 @@ test("doctor warns about aliases the policy defines, never about built-in ones",
   expect(await policyCheck()).toContain("aliases to unknown connectors: mine");
 });
 
+test("AXI is on by default inside Claude Code; PLUGBOARD_AXI=0 turns it off", async () => {
+  const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
+  expect((await run([], { env: { ...env, CLAUDECODE: "1" } })).all).toContain("connectors[2]");
+  expect((await run([], { env: { ...env, CLAUDECODE: "1", PLUGBOARD_AXI: "0" } })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
+  expect((await run([], { env })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
+});
+
 test("home, listing, help, find and policy never spawn claude; plain by default, AXI with --axi", async () => {
   const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
   expect((await run([], { env })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);

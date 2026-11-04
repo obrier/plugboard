@@ -82,6 +82,7 @@ Optional: `plugboard setup hooks` also installs the session-start hook for OpenC
 You already have the connectors in-session, so Plugboard is for the scripts and other agents on the same machine. Still, two things help:
 
 - `plugboard setup hooks` shows the home view at session start, so Claude Code knows what's scriptable.
+- Output is AXI by default inside Claude Code, since `CLAUDECODE` is set there. `PLUGBOARD_AXI=0` turns it off, and an explicit `--out` still wins.
 - `plugboard usage` ranks tools by how often your past sessions called them, which `plugboard <connector>` uses to order its listing.
 
 Writes from inside a Claude Code session are refused unless a profile sets `allow_in_agent = true`. Leave it off.
