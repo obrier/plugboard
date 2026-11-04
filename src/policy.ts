@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fail } from "./errors";
 import { expandHome, policyPath, transformsPath } from "./platform";
 import DEFAULTS from "./defaults.toml";
+import { runtime } from "./runtime";
 import type { ManifestTool } from "./cache";
 
 export type Mode = "read" | "write";
@@ -29,7 +30,7 @@ const strings = (path: string, key: string, value: unknown): string[] => {
 };
 
 const parseToml = (text: string, path: string, hints?: string[]) => {
-  try { return Bun.TOML.parse(text) as Record<string, any>; } catch (error) { throw bad(path, (error as Error).message, hints); }
+  try { return runtime.parseToml(text) as Record<string, any>; } catch (error) { throw bad(path, (error as Error).message, hints); }
 };
 
 /** Built-ins, then transforms.toml (its [transforms] only: it can never grant a profile), then policy.toml. */

@@ -3,13 +3,14 @@ import { childEnv } from "./bridge/capture";
 import { asAxiError, fail, isPermissionError } from "./errors";
 import { findClaude } from "./platform";
 import type { Policy } from "./policy";
+import { runtime } from "./runtime";
 
 export const claudePath = (policy: Policy) => findClaude(policy.claudePath);
 
 function run(path: string, args: string[]) {
   try {
-    const proc = Bun.spawnSync([path, ...args], { env: childEnv(), stdout: "pipe", stderr: "ignore" });
-    return proc.exitCode === 0 ? proc.stdout.toString().trim() : undefined;
+    const proc = runtime.spawnSync([path, ...args], { env: childEnv() });
+    return proc.exitCode === 0 ? proc.stdout.trim() : undefined;
   } catch { return undefined; }
 }
 

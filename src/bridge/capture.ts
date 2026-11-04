@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { findClaude } from "../platform";
+import { writeFile } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
+import { runtime, type Proc } from "../runtime";
 import { join } from "node:path";
 
 export type ToolSchema = {
@@ -49,9 +52,8 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
   const requests: { method: string; path: string; connectorTools: number }[] = [];
   let schemas: ToolSchema[] = [];
   const rejection = "Local schema capture only; no model is available.";
-  const server = await (async () => { try { return Bun.serve({
-    hostname: "127.0.0.1", port: 0,
-    async fetch(request) {
+  const server = await (async () => { try { return await runtime.serve(
+    async request => {
       // Never retain headers, messages, system prompts, or account metadata.
       let body: unknown;
       try { body = await request.json(); } catch { /* e.g. HEAD /api/hello */ }
@@ -73,12 +75,12 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
         type: "invalid_request_error", message: rejection,
       } }, { status: 400 });
     },
-  }); } catch (error) {
+  ); } catch (error) {
     if (ownedDirectory) await rm(ownedDirectory, { recursive: true, force: true });
     throw error;
   } })();
 
-  let proc: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined;
+  let proc: Proc | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   let initTools: string[] = [];
@@ -99,17 +101,17 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
     };
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"])
       delete env[key];
-    proc = Bun.spawn([
+    proc = runtime.spawn([
       options.claudePath ?? findClaude(),
       "--print", "--verbose", "--output-format", "stream-json",
       "--input-format", "stream-json",
       "--no-session-persistence", "--setting-sources", "",
       "--settings", '{"disableAllHooks":true}', "--tools", "",
       "--permission-mode", "dontAsk", "--no-chrome",
-    ], { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    ], { cwd, env });
     deadline = setTimeout(() => { timedOut = true; abort(); }, timeoutMs);
     draining = (async () => {
-      for await (const _chunk of proc!.stderr as ReadableStream<Uint8Array>) { /* discard diagnostics */ }
+      for await (const _chunk of proc!.stderr) { /* discard diagnostics */ }
     })();
     void draining.catch(() => {});
     const decoder = new TextDecoder();
@@ -177,7 +179,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
       assert.ok(Array.isArray(status.mcpServers));
       if (status.mcpServers.length && status.mcpServers.every(server => record(server) && server.status !== "pending")) break;
       assert.ok(Date.now() < discoveryDeadline, "Connector discovery did not finish");
-      await Bun.sleep(200);
+      await sleep(200);
     }
     send({ type: "user", message: { role: "user", content: "Local schema capture probe." },
       parent_tool_use_id: null, session_id: crypto.randomUUID() });
@@ -197,7 +199,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
     return { schemas, verification: {
       toolCount: schemas.length, requests, modelEndpoint: "loopback (no forwarding)",
       totalCostUsd: result.total_cost_usd, inputTokens: result.usage.input_tokens,
-      outputTokens: result.usage.output_tokens, bunVersion: Bun.version,
+      outputTokens: result.usage.output_tokens, runtime: process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`,
     } };
   } catch (error) {
     options.signal?.throwIfAborted();
@@ -209,7 +211,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
     abort();
     if (proc) await proc.exited;
     await Promise.allSettled([reading, draining]);
-    server.stop(true);
+    server.stop();
     if (ownedDirectory) await rm(ownedDirectory, { recursive: true, force: true });
   }
 }
@@ -217,8 +219,8 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
 if (import.meta.main) {
   const { schemas, verification } = await captureConnectorSchemas();
   const outputDir = await mkdtemp(join(tmpdir(), "claude-connector-schemas-"));
-  await Bun.write(join(outputDir, "schemas.json"), JSON.stringify(schemas, null, 2));
-  await Bun.write(join(outputDir, "verification.json"), JSON.stringify(verification, null, 2));
+  await writeFile(join(outputDir, "schemas.json"), JSON.stringify(schemas, null, 2));
+  await writeFile(join(outputDir, "verification.json"), JSON.stringify(verification, null, 2));
   console.log(JSON.stringify(verification, null, 2));
   console.log(`PASS — output: ${outputDir}`);
 }
