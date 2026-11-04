@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { findClaude } from "../platform";
 import { join } from "node:path";
-import { captureConnectorSchemas, childEnv } from "./capture";
+import { captureConnectorSchemas, childEnv, POLL_MS } from "./capture";
 import { setTimeout as sleep } from "node:timers/promises";
 import { runtime as detected, type Proc, type Runtime } from "../runtime";
 import type { ToolSchema } from "./capture";
@@ -186,7 +186,7 @@ export class ClaudeConnectors {
       const settled = servers.length > 0 && !servers.some(server => server.status === "pending");
       if (settled) return servers;
       if (names?.length && names.every(name => servers.some(server => server.name === name && server.status !== "pending"))) return servers;
-      await sleep(Math.min(200, Math.max(0, deadline - Date.now())));
+      await sleep(Math.min(POLL_MS, Math.max(0, deadline - Date.now())));
     }
   }
 
