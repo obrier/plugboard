@@ -94,7 +94,7 @@ Every tool parameter is a flag, generated from the tool's JSON Schema:
 
 Arguments merge in this order, later winning: `--arg-file`, then `--json`, then individual flags, then dot-flags. The result is validated against the tool's schema before anything is sent.
 
-Time parameters you list in the policy file accept `today`, `yesterday`, `-2d`, `+7d`, `2026-11-03`, or `monday 9am`, converted to the format the tool expects.
+Time parameters accept `today`, `yesterday`, `-2d`, `+7d`, `2026-11-03`, or `monday 9am`, converted to the format the tool expects; `--help` marks them. That works for parameters whose schema declares a date format, for the built-in rules (Google Calendar's `list_events` and `suggest_time`), and for the ones you add to `~/.config/plugboard/transforms.toml` ([example](transforms.example.toml)). To find and test your own connectors' time parameters, give an agent the [plugboard-transforms](skills/plugboard-transforms/SKILL.md) skill: it writes only that file, never the policy.
 
 ## Output
 
@@ -267,7 +267,8 @@ Rules:
 
 | Path | Holds | Override |
 |---|---|---|
-| `~/.config/plugboard/policy.toml` | Profiles, aliases, time transforms | `PLUGBOARD_POLICY` |
+| `~/.config/plugboard/policy.toml` | Profiles, aliases | `PLUGBOARD_POLICY` |
+| `~/.config/plugboard/transforms.toml` | Time transforms only; nothing else in it is read | `PLUGBOARD_TRANSFORMS` |
 | `~/.cache/plugboard/` | Tool schemas per connector, usage counts | `PLUGBOARD_CACHE` |
 | `~/.local/state/plugboard/` | Audit log, last doctor result | `PLUGBOARD_STATE` |
 | `~/.local/bin/claude` | The Claude Code binary to drive | `PLUGBOARD_CLAUDE`, or `claude_path` in the policy |

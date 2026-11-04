@@ -12,7 +12,8 @@ for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
   dir=$out/plugboard-$version-$target
   mkdir -p "$dir"
   bun build --compile --minify --target=bun-$target --outfile="$dir/plugboard" src/cli.ts >/dev/null
-  cp LICENSE README.md policy.example.toml "$dir/"
+  cp LICENSE README.md policy.example.toml transforms.example.toml "$dir/"
+  cp -R skills "$dir/"
   tar -czf "$dir.tar.gz" -C "$out" "plugboard-$version-$target"
   rm -rf "$dir"
 done

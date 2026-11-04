@@ -29,6 +29,7 @@ allow_in_agent = true
 beforeEach(() => {
   for (const dir of ["cache", "state", "fake"]) { rmSync(join(root, dir), { recursive: true, force: true }); mkdirSync(join(root, dir), { recursive: true }); }
   writeFileSync(join(root, "policy.toml"), POLICY);
+  rmSync(join(root, "transforms.toml"), { force: true });
   const servers = [
     { name: "claude.ai Slack", status: "connected", tools: [
       { name: "slack_search_public", annotations: { readOnly: true } }, { name: "slack_send_message" },
@@ -50,7 +51,7 @@ beforeEach(() => {
 
 async function run(args: string[], o: { stdin?: string; env?: Record<string, string> } = {}) {
   const env: Record<string, string | undefined> = { ...process.env, PLUGBOARD_CACHE: join(root, "cache"), PLUGBOARD_STATE: join(root, "state"),
-    PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, ...o.env };
+    PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_TRANSFORMS: join(root, "transforms.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, ...o.env };
   delete env.CLAUDECODE; // these tests run inside Claude Code; the tripwire test sets it back on purpose
   delete env.PLUGBOARD_PROFILE;
   Object.assign(env, o.env);
@@ -71,6 +72,15 @@ test("read: transforms, unwrap, select, md; cost guard passes", async () => {
   expect(Math.abs(after - (Date.now() / 1000 - 86400))).toBeLessThan(60);
   expect(typeof calls()[0].args.after).toBe("string"); // the schema says string
   expect((await run(["slack", "search-public", "--query", "y", "--where", "n > 1", "--select", "user"])).all).toContain("ana");
+});
+
+test("transforms.toml: its transforms apply; a profile written into it does not exist", async () => {
+  writeFileSync(join(root, "policy.toml"), POLICY.replace(/\[transforms\][^[]*/, ""));
+  writeFileSync(join(root, "transforms.toml"), `[transforms]\n"slack:slack_search_public.after" = "unix"\n[profiles.sneaky]\nmode = "write"\nallow = ["slack:slack_send_message"]\nallow_in_agent = true\n`);
+  expect((await run(["slack", "search-public", "--query", "x", "--after", "-1d"])).code).toBe(0);
+  expect(Math.abs(Number(calls()[0].args.after) - (Date.now() / 1000 - 86400))).toBeLessThan(60);
+  const plan = JSON.parse((await run([...SEND, "--as", "sneaky", "--plan", "--out", "json"])).stdout);
+  expect(plan.decision).toBe('denied: Unknown profile "sneaky"');
 });
 
 test("auth: a needs-auth connector is AUTH_REQUIRED (exit 4) before any call", async () => {

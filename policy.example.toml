@@ -10,15 +10,7 @@ version = 1
 read  = []          # unannotated tools that only read; say why on each line
 write = []          # tools annotated read-only that are not
 
-[transforms]        # reads only: these parameters accept today, -2d, 2026-11-03, monday 9am
-"slack:slack_search_public.after" = "unix"
-"slack:slack_search_public.before" = "unix"
-"slack:slack_search_public_and_private.after" = "unix"
-"slack:slack_search_public_and_private.before" = "unix"
-"slack:slack_read_channel.oldest" = "unix"
-"slack:slack_read_channel.latest" = "unix"
-"google-calendar:list_events.startTime" = "rfc3339"
-"google-calendar:list_events.endTime" = "rfc3339"
+# Time transforms go in transforms.toml (example: transforms.example.toml). A [transforms] table here still works and wins.
 
 [limits]
 concurrency = 4

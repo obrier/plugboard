@@ -1,0 +1,13 @@
+# Plugboard time transforms. Path: $PLUGBOARD_TRANSFORMS, else ~/.config/plugboard/transforms.toml.
+# Only [transforms] is read from this file: it can't define profiles, aliases or anything else.
+# Each line makes a read tool's parameter accept today, -2d, 2026-11-03 or monday 9am, converted to
+# rfc3339, date, unix or unix-ms. Keys take the raw names or the ones the CLI shows (slack:search-public.after).
+# The skill skills/plugboard-transforms finds and tests these for your own connectors.
+
+[transforms]
+"slack:slack_search_public.after" = "unix"
+"slack:slack_search_public.before" = "unix"
+"slack:slack_search_public_and_private.after" = "unix"
+"slack:slack_search_public_and_private.before" = "unix"
+"slack:slack_read_channel.oldest" = "unix"
+"slack:slack_read_channel.latest" = "unix"

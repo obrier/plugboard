@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { AxiError } from "axi-sdk-js";
 import { keyState } from "../src/audit";
 import { mergeCapture, shortName, findTool, type Manifest } from "../src/cache";
-import { canonical, payloadHash, refOf } from "../src/call";
+import { applyTransforms, canonical, payloadHash, refOf, timeParams } from "../src/call";
 import { classify as classifyError } from "../src/errors";
 import { mergeArgs, parseFlags, toolHelp } from "../src/flags";
 import { markdownOf, render, shape, unwrap } from "../src/output";
@@ -140,6 +140,39 @@ describe("doctor probe", () => {
       expect(tried).toEqual(["a"]);
       expect(result.error).toContain("a: down");
     }
+  });
+});
+
+describe("transforms", () => {
+  const evil = `[transforms]\n"cal:list_events.updatedMin" = "unix"\n"slack:slack_search_public.after" = "date"\n[profiles.evil]\nmode = "write"\nallow = ["slack:slack_send_message"]\nallow_in_agent = true\n[aliases]\nx = "y"`;
+  test("built-in rules apply with no files at all", () => {
+    expect(parsePolicy("", "p").transforms["google-calendar:list_events.startTime"]).toBe("rfc3339");
+    expect(parsePolicy("", "p").aliases.cal).toBe("google-calendar");
+  });
+  test("transforms.toml adds transforms and nothing else; policy.toml wins over it", () => {
+    const p = parsePolicy(`[transforms]\n"slack:slack_search_public.after" = "unix"`, "policy.toml", { text: evil, path: "transforms.toml" });
+    expect(p.transforms["google-calendar:list_events.updatedMin"]).toBe("unix"); // alias resolved
+    expect(p.transforms["slack:slack_search_public.after"]).toBe("unix"); // policy.toml wins
+    expect(p.transforms["google-calendar:list_events.startTime"]).toBe("rfc3339"); // built-in kept
+    expect(p.profiles.evil).toBeUndefined();
+    expect(p.aliases.x).toBeUndefined();
+    expect(code(() => parsePolicy("", "p", { text: "[transforms]\n'a:b.c' = 'weekday'", path: "t" }))).toBe("VALIDATION_ERROR");
+  });
+  test("a key may use the names the CLI shows: short tool name and flag name", () => {
+    const tool = { name: "slack_search_public", sourceName: "s", annotations: { readOnlyHint: true },
+      inputSchema: { type: "object", properties: { afterTs: { type: "string" } } } };
+    const p = parsePolicy("", "p", { text: `[transforms]\n"slack:search-public.after-ts" = "date"`, path: "t" });
+    expect(timeParams(p, "slack", tool)).toEqual(["afterTs"]);
+    expect(applyTransforms(p, "slack", tool, { afterTs: "2026-11-03" }).afterTs).toBe("2026-11-03");
+  });
+  test("a read parameter whose schema declares format date-time or date converts without a rule", () => {
+    const tool = (annotations?: Record<string, boolean>) => ({ name: "list", sourceName: "s", annotations,
+      inputSchema: { type: "object", properties: { at: { type: "string", format: "date-time" }, day: { type: "string", format: "date" }, q: { type: "string" } } } });
+    const p = parsePolicy("", "p");
+    expect(timeParams(p, "c", tool({ readOnlyHint: true }))).toEqual(["at", "day"]);
+    const out = applyTransforms(p, "c", tool({ readOnlyHint: true }), { at: "2026-11-03", day: "2026-11-03", q: "today" });
+    expect(out.at).toMatch(/^2026-11-03T00:00:00[+-]\d{2}:\d{2}$/);
+    expect(out).toMatchObject({ day: "2026-11-03", q: "today" });
   });
 });
 

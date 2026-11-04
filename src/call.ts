@@ -8,7 +8,7 @@ import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import { findTool, loadIndex, loadManifest, nearNames, shortName, type Manifest, type ManifestTool } from "./cache";
 import { connect, costGuard } from "./claude";
 import { classify as classifyError, fail } from "./errors";
-import { mergeArgs, parseFlags, summaryOf, toolHelp, typeOf } from "./flags";
+import { kebab, mergeArgs, parseFlags, summaryOf, toolHelp, typeOf } from "./flags";
 import { defaultFormat, errorText, OUT_FORMATS, parseList, render, shape, unwrap } from "./output";
 import { loadUsage } from "./usage";
 import { classify, decide, loadPolicy, profileFor, resolveConnector, type Policy, type ToolClass } from "./policy";
@@ -66,11 +66,18 @@ export function canonical(value: unknown): string {
 export const payloadHash = (connector: string, tool: string, args: unknown) =>
   `sha256:${createHash("sha256").update(canonical({ connector, tool, args }), "utf8").digest("hex")}`;
 
-/** Reads only: `today`, `-2d`… for parameters listed in policy.toml [transforms]. */
+const SCHEMA_FORMATS: Record<string, string> = { "date-time": "rfc3339", date: "date" };
+/** A parameter's time format: a [transforms] rule, keyed by the raw names or the ones the CLI shows,
+ * else, on read tools, the format its schema declares. */
+const transformFor = (policy: Policy, id: string, tool: ManifestTool, prop: string) =>
+  policy.transforms[`${id}:${tool.name}.${prop}`] ?? policy.transforms[`${id}:${shortName(id, tool.name)}.${kebab(prop)}`]
+  ?? (classify(policy, id, tool) === "read" ? SCHEMA_FORMATS[tool.inputSchema.properties?.[prop]?.format] : undefined);
+
+/** Reads only: `today`, `-2d`… for parameters with a transform. */
 export function applyTransforms(policy: Policy, id: string, tool: ManifestTool, args: Record<string, unknown>) {
   const out = { ...args };
   for (const [prop, value] of Object.entries(args)) {
-    const format = policy.transforms[`${id}:${tool.name}.${prop}`];
+    const format = transformFor(policy, id, tool, prop);
     if (!format || typeof value !== "string") continue;
     const date = parseTime(value);
     if (!date) throw fail("VALIDATION_ERROR", `--${prop}: can't read "${value}" as a time`, ["Try today, -2d, 2026-11-03 or monday 9am"]);
@@ -80,7 +87,7 @@ export function applyTransforms(policy: Policy, id: string, tool: ManifestTool, 
   return out;
 }
 export const timeParams = (policy: Policy, id: string, tool: ManifestTool) =>
-  Object.keys(tool.inputSchema.properties ?? {}).filter(p => policy.transforms[`${id}:${tool.name}.${p}`]);
+  Object.keys(tool.inputSchema.properties ?? {}).filter(p => transformFor(policy, id, tool, p));
 
 export type Prepared = { manifest: Manifest; tool: ManifestTool; args: Record<string, unknown>; cls: ToolClass; hash: string };
 
@@ -155,7 +162,7 @@ export async function runTool(connectorRef: string, args: string[]) {
     const reason = policy.overrides.read.includes(`${manifest.id}:${tool.name}`) || policy.overrides.write.includes(`${manifest.id}:${tool.name}`)
       ? "policy override" : tool.annotations?.readOnlyHint ? "readOnlyHint" : "no readOnlyHint: fail closed";
     return toolHelp({ bin: BIN, connector: manifest.id, short: shortName(manifest.id, tool.name), schema: tool.inputSchema, description: tool.description,
-      cls: `${cls}${tool.annotations?.destructiveHint ? ", destructive" : ""}`, reason, timeParams: timeParams(policy, manifest.id, tool), full: g.full === true });
+      cls: `${cls}${tool.annotations?.destructiveHint ? ", destructive" : ""}`, reason, timeParams: cls === "read" ? timeParams(policy, manifest.id, tool) : [], full: g.full === true });
   }
   const format = String(g.out ?? defaultFormat());
   if (!OUT_FORMATS.includes(format)) throw fail("VALIDATION_ERROR", `--out must be one of ${OUT_FORMATS.join(", ")}`);

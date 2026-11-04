@@ -29,7 +29,7 @@ class Plugboard < Formula
 
   def install
     bin.install "plugboard"
-    pkgshare.install "policy.example.toml"
+    pkgshare.install "policy.example.toml", "transforms.example.toml", "skills"
   end
 
   def caveats
@@ -41,6 +41,8 @@ class Plugboard < Formula
       Start with:
         plugboard refresh && plugboard doctor
       Example policy: #{opt_pkgshare}/policy.example.toml → ~/.config/plugboard/policy.toml
+      Time transforms: #{opt_pkgshare}/transforms.example.toml → ~/.config/plugboard/transforms.toml
+      Agent skills: #{opt_pkgshare}/skills
     EOS
   end
 

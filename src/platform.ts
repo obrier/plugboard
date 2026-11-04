@@ -58,6 +58,9 @@ export const stateDir = (c = realCtx()) => (c.env.PLUGBOARD_STATE ? expandHome(c
 export const policyPath = (c = realCtx()) =>
   (c.env.PLUGBOARD_POLICY ? expandHome(c.env.PLUGBOARD_POLICY, c) : pathFor(c).join(dirs(c).config, "policy.toml"));
 
+export const transformsPath = (c = realCtx()) =>
+  (c.env.PLUGBOARD_TRANSFORMS ? expandHome(c.env.PLUGBOARD_TRANSFORMS, c) : pathFor(c).join(dirs(c).config, "transforms.toml"));
+
 /** Claude Code's own config directory: ~/.claude on every OS, unless CLAUDE_CONFIG_DIR moves it. */
 export const claudeConfigDir = (c = realCtx()) =>
   (c.env.CLAUDE_CONFIG_DIR ? expandHome(c.env.CLAUDE_CONFIG_DIR, c) : pathFor(c).join(c.home, ".claude"));

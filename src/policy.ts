@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fail } from "./errors";
-import { expandHome, policyPath } from "./platform";
+import { expandHome, policyPath, transformsPath } from "./platform";
+import DEFAULTS from "./defaults.toml";
 import type { ManifestTool } from "./cache";
 
 export type Mode = "read" | "write";
@@ -16,7 +17,7 @@ export type Policy = {
 };
 export const TIME_FORMATS = ["unix", "unix-ms", "rfc3339", "date"];
 
-export const DEFAULT_ALIASES: Record<string, string> = { cal: "google-calendar", gcal: "google-calendar", drive: "google-drive" };
+export const DEFAULT_ALIASES: Record<string, string> = DEFAULTS.aliases;
 const DEFAULT_PROFILE: Profile = { mode: "read", allow: ["*:*"], deny: [], allowDestructive: false, allowInAgent: false };
 
 const bad = (path: string, message: string) => fail("VALIDATION_ERROR", `policy ${path}: ${message}`, [`Edit ${path}`]);
@@ -26,9 +27,13 @@ const strings = (path: string, key: string, value: unknown): string[] => {
   return value as string[];
 };
 
-export function parsePolicy(text: string, path: string): Policy {
-  let raw: Record<string, any>;
-  try { raw = Bun.TOML.parse(text) as Record<string, any>; } catch (error) { throw bad(path, (error as Error).message); }
+const parseToml = (text: string, path: string) => {
+  try { return Bun.TOML.parse(text) as Record<string, any>; } catch (error) { throw bad(path, (error as Error).message); }
+};
+
+/** Built-ins, then transforms.toml (its [transforms] only: it can never grant a profile), then policy.toml. */
+export function parsePolicy(text: string, path: string, transformsFile?: { text: string; path: string }): Policy {
+  const raw = parseToml(text, path);
   if (raw.version !== undefined && raw.version !== 1) throw bad(path, `unsupported version ${raw.version}`);
   const aliases: Record<string, string> = { ...DEFAULT_ALIASES, ...(raw.aliases ?? {}) };
   const resolve = (id: string) => aliases[id] ?? id;
@@ -51,11 +56,16 @@ export function parsePolicy(text: string, path: string): Policy {
     };
   }
   const transforms: Record<string, string> = {};
-  for (const [key, format] of Object.entries(raw.transforms ?? {})) {
-    if (!TIME_FORMATS.includes(String(format))) throw bad(path, `transforms."${key}" must be one of ${TIME_FORMATS.join(", ")}`);
-    const at = key.indexOf(":");
-    transforms[at > 0 ? `${resolve(key.slice(0, at))}${key.slice(at)}` : key] = String(format);
-  }
+  const addTransforms = (source: string, table: Record<string, unknown> | undefined) => {
+    for (const [key, format] of Object.entries(table ?? {})) {
+      if (!TIME_FORMATS.includes(String(format))) throw bad(source, `transforms."${key}" must be one of ${TIME_FORMATS.join(", ")}`);
+      const at = key.indexOf(":");
+      transforms[at > 0 ? `${resolve(key.slice(0, at))}${key.slice(at)}` : key] = String(format);
+    }
+  };
+  addTransforms("built-in defaults", DEFAULTS.transforms);
+  if (transformsFile) addTransforms(transformsFile.path, parseToml(transformsFile.text, transformsFile.path).transforms);
+  addTransforms(path, raw.transforms);
   return {
     source: path,
     claudePath: typeof raw.claude_path === "string" ? expandHome(raw.claude_path) : undefined,
@@ -72,8 +82,10 @@ export function parsePolicy(text: string, path: string): Policy {
 
 export function loadPolicy(): Policy {
   const path = policyPath();
-  if (!existsSync(path)) return { ...parsePolicy("", path), source: null };
-  return parsePolicy(readFileSync(path, "utf8"), path);
+  const tPath = transformsPath();
+  const transformsFile = existsSync(tPath) ? { text: readFileSync(tPath, "utf8"), path: tPath } : undefined;
+  if (!existsSync(path)) return { ...parsePolicy("", path, transformsFile), source: null };
+  return parsePolicy(readFileSync(path, "utf8"), path, transformsFile);
 }
 
 export const resolveConnector = (policy: Policy, ref: string) => policy.aliases[ref] ?? ref;

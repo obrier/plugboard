@@ -1,0 +1,13 @@
+# Built-in rules, compiled into the binary. ~/.config/plugboard/transforms.toml, then policy.toml, merge over them.
+# Add a transform here only after a live read accepted the converted value.
+
+[aliases]
+cal = "google-calendar"
+gcal = "google-calendar"
+drive = "google-drive"
+
+[transforms]
+"google-calendar:list_events.startTime" = "rfc3339"
+"google-calendar:list_events.endTime" = "rfc3339"
+"google-calendar:suggest_time.startTime" = "rfc3339"
+"google-calendar:suggest_time.endTime" = "rfc3339"
