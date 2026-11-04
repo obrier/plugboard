@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { unresolvedKeys } from "./audit";
@@ -9,7 +9,7 @@ import { BIN, invoke, prepare, profileName } from "./call";
 import { authStatus, claudePath, claudeVersion, connect, costGuard } from "./claude";
 import { AxiError } from "axi-sdk-js";
 import { EXIT } from "./errors";
-import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, stateDir, windowsClaudeFromWSL } from "./platform";
+import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, saveJson, saveRecord, stateDir, windowsClaudeFromWSL } from "./platform";
 import { classify, DEFAULT_ALIASES, loadPolicy, matches, probeTools, profileFor, type Policy, type Profile } from "./policy";
 
 type Status = "ok" | "warn" | "fail" | "info";
@@ -31,8 +31,10 @@ export async function probe<T extends { name: string }>(tools: T[], call: (tool:
 
 const KNOWN_MESSAGE_TYPES = new Set(["control_response", "system"]);
 export const doctorPath = () => join(stateDir(), "doctor.json");
-export const lastDoctor = (): Record<string, any> | undefined =>
-  existsSync(doctorPath()) ? JSON.parse(readFileSync(doctorPath(), "utf8")) : undefined;
+/** The last result, if one was saved whole; a file that doesn't parse counts as none, so it can't break the home view. */
+export const lastDoctor = (): Record<string, any> | undefined => {
+  try { return existsSync(doctorPath()) ? JSON.parse(readFileSync(doctorPath(), "utf8")) : undefined; } catch { return undefined; }
+};
 
 /** Connectors a profile names explicitly: those are required; `*:` patterns require nothing. */
 export const requiredConnectors = (profile: Profile) =>
@@ -193,18 +195,27 @@ export async function doctor(argv: string[]) {
 
   // A version is "tested" once protocol, cost and live reads pass on it.
   const failedCore = checks.some(c => c.status === "fail" && (c.check === "protocol" || c.check === "zero-cost" || c.check.startsWith("read:")));
-  if (version && readyMs !== undefined && costText && !failedCore && index && !tested.includes(version)) saveIndex({ ...index, testedVersions: [...tested, version] });
+  const unsaved: string[] = []; // records doctor keeps; a folder it can't write (an agent's sandbox) must not fail it
+  if (version && readyMs !== undefined && costText && !failedCore && index && !tested.includes(version)) {
+    const error = saveRecord(join(cacheDir(), "index.json"), () => saveIndex({ ...index, testedVersions: [...tested, version] }));
+    if (error) unsaved.push(error);
+  }
 
   const warned = checks.some(c => c.status === "warn");
   const otherFail = checks.some(c => c.status === "fail");
-  const exitCode = broken || !version ? EXIT.BRIDGE_BROKEN : blind.size ? EXIT.PARTIAL : otherFail ? 1 : warned && values.strict ? EXIT.PARTIAL : EXIT.OK;
+  let exitCode = broken || !version ? EXIT.BRIDGE_BROKEN : blind.size ? EXIT.PARTIAL : otherFail ? 1 : warned && values.strict ? EXIT.PARTIAL : EXIT.OK;
   const result = {
     claude: version ? `${version}${tested.includes(version) ? " (tested)" : ""}` : "missing",
     bridge: broken || !version ? "broken" : `ok${readyMs ? ` (ready ${(readyMs / 1000).toFixed(1)}s, $0.0000, 0 tokens)` : ""}`,
     profile, checks, blind: [...blind], exit: exitCode, at: new Date().toISOString(),
   };
-  mkdirSync(stateDir(), { recursive: true });
-  writeFileSync(doctorPath(), JSON.stringify(result));
+  const saveError = saveJson(doctorPath(), result);
+  if (saveError) unsaved.push(saveError);
+  if (unsaved.length) {
+    add("state", "warn", `not saved: ${unsaved.join("; ")}`, "Let plugboard write its state and cache folders (in a sandbox, add them as writable roots)");
+    if (values.strict && exitCode === EXIT.OK) exitCode = EXIT.PARTIAL; // a warning, as any other under --strict
+    result.exit = exitCode;
+  }
   const remedies = [...new Set(help)];
   const out = values.out === "json" ? JSON.stringify({ ...result, help: remedies }) : { ...result, ...(remedies.length ? { help: remedies } : {}) };
   return { out, exitCode };

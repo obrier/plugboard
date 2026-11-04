@@ -395,3 +395,31 @@ describe("batch --axi and full results on disk", () => {
     expect((await run(["slack", "search-public", "--query", long, "--axi", "--full"])).stdout).not.toContain("full result:");
   });
 });
+
+test("doctor: a state folder it can't write doesn't fail the check; it says so", async () => {
+  writeFileSync(join(fake, "gmail-connected"), "1");
+  const blocked = join(root, "state-is-a-file");
+  writeFileSync(blocked, "");
+  const r = await run(["doctor", "--as", "gather", "--out", "json"], { env: { PLUGBOARD_STATE: blocked } });
+  const result = JSON.parse(r.stdout);
+  expect(result.checks.find((c: { check: string }) => c.check === "state")).toMatchObject({ status: "warn", detail: expect.stringContaining("not saved") });
+  expect(r.code).toBe(0);
+  expect((await run(["doctor", "--as", "gather", "--strict"], { env: { PLUGBOARD_STATE: blocked } })).code).toBe(7); // a warning, under --strict
+});
+
+test("a doctor.json cut short (disk full, say) never breaks the home view", async () => {
+  writeFileSync(join(root, "state", "doctor.json"), '{"claude":"2.1');
+  const r = await run([]);
+  expect(r.code).toBe(0);
+  expect(r.stdout).toContain("connectors");
+});
+
+test("usage says so when its counts can't be saved, instead of claiming it saved them", async () => {
+  mkdirSync(join(root, "transcripts/p"), { recursive: true });
+  writeFileSync(join(root, "transcripts/p/s.jsonl"), "");
+  mkdirSync(join(root, "cache/usage.json/blocker"), { recursive: true }); // a folder where the file goes: the rename fails
+  const r = await run(["usage"], { env: { PLUGBOARD_TRANSCRIPTS: join(root, "transcripts") } });
+  expect(r.code).toBe(0);
+  expect(r.all).not.toContain("Saved to the cache");
+  expect(r.all).toContain("not saved");
+});
