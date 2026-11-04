@@ -18,12 +18,15 @@ function record(value: unknown): value is Record<string, unknown> {
 // Per-session variables a parent Claude Code exports into its Bash tool (session ids, the host
 // messaging socket and token, the CLAUDECODE marker). The child is its own session and must not
 // inherit them. Auth-carrying variables are kept.
+// The child never feeds a model, so Claude Code's MCP output cap only loses data: a text result over
+// it comes back as an "Output has been saved to" notice. A cap set by the parent is lifted.
 const KEEP = new Set(["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"]);
 export function childEnv(source: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(source)) {
     if (KEEP.has(key) || !(key === "CLAUDECODE" || key === "CLAUDE_PID" || /^CLAUDE_(CODE|AGENT_SDK|EFFORT|PREVIEW)_?/.test(key))) env[key] = value;
   }
+  env.MAX_MCP_OUTPUT_TOKENS = "1000000000";
   return env;
 }
 

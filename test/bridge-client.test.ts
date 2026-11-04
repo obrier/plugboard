@@ -139,3 +139,15 @@ test("close rejects pending and future requests and can be called twice", async 
   await client.close();
   await expect(client.listTools()).rejects.toThrow("closed");
 });
+
+test("the child has no MCP output cap, whatever the parent sets: results over it would come back as a notice", async () => {
+  const saved = process.env.MAX_MCP_OUTPUT_TOKENS;
+  process.env.MAX_MCP_OUTPUT_TOKENS = "1000";
+  try {
+    const client = await connect();
+    const result = await client.callTool<{ value: string }>("mcp__fake__echo", { action: "env", name: "MAX_MCP_OUTPUT_TOKENS" });
+    expect(Number(result.structuredContent?.value)).toBeGreaterThanOrEqual(1_000_000);
+  } finally {
+    if (saved === undefined) delete process.env.MAX_MCP_OUTPUT_TOKENS; else process.env.MAX_MCP_OUTPUT_TOKENS = saved;
+  }
+});
