@@ -404,3 +404,13 @@ test("a Claude Code it isn't allowed to start is explained as a permission probl
   expect(r.stderr).toContain("sandbox");
   expect(r.stderr).not.toContain("breaking update");
 });
+
+test("batch keeps the hints: a sandbox that blocks Claude Code says so on every line", async () => {
+  const blocked = join(root, "claude-not-executable-2");
+  writeFileSync(blocked, "#!/bin/sh\n");
+  const lines = ["a", "b"].map(q => JSON.stringify({ id: q, connector: "slack", tool: "search-public", args: { query: q } })).join("\n");
+  const r = await run(["batch", "--as", "gather"], { stdin: lines, env: { PLUGBOARD_CLAUDE: blocked } });
+  const out = r.stdout.trim().split("\n").map(l => JSON.parse(l));
+  expect(r.code).toBe(10);
+  for (const o of out) expect(o.error.help.join(" ")).toContain("sandbox");
+});

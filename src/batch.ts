@@ -11,9 +11,14 @@ import { decide, loadPolicy } from "./policy";
 
 type Line = { id?: unknown; connector?: unknown; tool?: unknown; args?: unknown; select?: unknown; where?: unknown; items?: unknown; deadline?: unknown };
 type Task = { id: unknown; index: number; p: Prepared; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
-export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: { code: Code; message: string; retryable: boolean; attempts?: number } };
+type Failure = { code: Code; message: string; help?: string[] };
+export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: Failure & { retryable: boolean; attempts?: number } };
 
-const errorOf = (error: unknown) => { const e = asAxiError(error, "UPSTREAM_ERROR"); return { code: e.code as Code, message: e.message }; };
+/** An error as a batch line reports it, its hints kept. */
+const errorOf = (error: unknown): Failure => {
+  const e = asAxiError(error, "UPSTREAM_ERROR");
+  return { code: e.code as Code, message: e.message, ...(e.suggestions.length ? { help: e.suggestions } : {}) };
+};
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export type BatchOptions = { profile: string; concurrency: number; perConnector: number; ordered: boolean; budgetMs: number };
@@ -56,9 +61,9 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
   });
   if (!tasks.length) return lines.length && failed ? EXIT.PARTIAL : EXIT.OK;
 
-  const failAll = (list: Task[], code: Code, message: string) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { code, message, retryable: false } }); };
+  const failAll = (list: Task[], failure: Failure) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { ...failure, retryable: false } }); };
   let client: Client;
-  try { client = await makeClient(); } catch (error) { failAll(tasks, "BRIDGE_BROKEN", errorOf(error).message); return EXIT.BRIDGE_BROKEN; }
+  try { client = await makeClient(); } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
   let broken = false;
   try {
@@ -69,7 +74,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
       for (const t of tasks) if (!blind.has(t.p.manifest.connectorName)) {
         try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error).message); }
       }
-    } catch (error) { failAll(tasks, "BRIDGE_BROKEN", errorOf(error).message); return EXIT.BRIDGE_BROKEN; }
+    } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
     const queue = [...tasks];
     const active = new Map<string, number>();
@@ -78,8 +83,8 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
     const budgetEnd = Date.now() + o.budgetMs;
     await new Promise<void>(resolve => {
       const pump = () => {
-        if (broken) failAll(queue, "BRIDGE_BROKEN", "Bridge failed during the batch");
-        if (Date.now() > budgetEnd) failAll(queue, "TIMEOUT", "Batch budget exceeded");
+        if (broken) failAll(queue, { code: "BRIDGE_BROKEN", message: "Bridge failed during the batch" });
+        if (Date.now() > budgetEnd) failAll(queue, { code: "TIMEOUT", message: "Batch budget exceeded" });
         for (let i = 0; i < queue.length && running < o.concurrency; i++) {
           const t = queue[i]!;
           const name = t.p.manifest.connectorName;
@@ -180,6 +185,7 @@ export function axiSummary(outs: Out[], inline?: string) {
     ...head,
     ...(inlined.length ? { inline: Object.fromEntries(inlined) } : {}),
     help: [
+      ...new Set(outs.flatMap(o => o.error?.help ?? [])), // what failed lines say to do, once each
       ...(writeError ? [`Some results were not written to disk (${writeError}): they are inline in full`] : []),
       ...(skipped ? [`${skipped} result(s) not inlined (${tokens(skippedChars)} tokens): read the files you need`] : []),
       ...(dir ? [`grep -l <word> "${dir}"/* finds a word across results; files are private and removed after a day`] : []),

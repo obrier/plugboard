@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { captureConnectorSchemas } from "./bridge/capture";
 import type { ConnectorServer } from "./bridge/client";
 import { claudePath, claudeVersion, connect } from "./claude";
-import { fail } from "./errors";
+import { asAxiError, fail } from "./errors";
 import { cacheDir } from "./platform";
 import type { Policy } from "./policy";
 
@@ -114,7 +114,8 @@ export async function refresh(policy: Policy, only?: string[]): Promise<RefreshR
     const [servers, capture] = await Promise.all([
       client.waitForServers(),
       captureConnectorSchemas({ claudePath: claudePath(policy) }).catch(error => {
-        throw fail("BRIDGE_BROKEN", `Schema capture failed: ${(error as Error).message}`, ["Run `plugboard doctor`"]);
+        const e = asAxiError(error, "BRIDGE_BROKEN"); // a sandbox blocking capture's own temp folder gets its hint
+        throw fail("BRIDGE_BROKEN", `Schema capture failed: ${e.message}`, [...e.suggestions, "Run `plugboard doctor`"]);
       }),
     ]);
     const { index, manifests, result } = mergeCapture(loadIndex(), servers, capture.schemas, only);

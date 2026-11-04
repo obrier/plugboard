@@ -283,6 +283,10 @@ describe("errors, time, cache", () => {
     expect(perm.suggestions.join(" ")).toContain("sandbox");
     expect(asAxiError(new Error("boom")).code).toBe("UNKNOWN");
     expect(asAxiError(new Error("boom"), "UPSTREAM_ERROR").code).toBe("UPSTREAM_ERROR");
+    expect(asAxiError(new Error("Claude Code closed stdout")).code).toBe("BRIDGE_BROKEN"); // the classify table still applies
+    const upstream = new AxiError("Slack: permission denied for channel", "UPSTREAM_ERROR");
+    expect(asAxiError(upstream)).toBe(upstream); // a connector's own text never gets the sandbox hint
+    expect(perm.suggestions.join(" ")).toContain("harness-guides.md#sandboxes"); // a link that works without the repo
   });
   test("error classification table", () => {
     expect(classifyError("invalid_auth")).toBe("AUTH_REQUIRED");

@@ -1,7 +1,6 @@
-import { ClaudeConnectors, DiscoveryTimeoutError } from "./bridge/client";
-import { AxiError } from "axi-sdk-js";
+import { ClaudeConnectors } from "./bridge/client";
 import { childEnv } from "./bridge/capture";
-import { asAxiError, fail, isPermissionError, SANDBOX_HINT } from "./errors";
+import { asAxiError, fail, isPermissionError } from "./errors";
 import { findClaude } from "./platform";
 import type { Policy } from "./policy";
 
@@ -28,10 +27,10 @@ export async function connect(policy: Policy) {
   try {
     return await ClaudeConnectors.connect({ claudePath: path });
   } catch (error) {
-    const message = (error as Error).message;
+    const e = asAxiError(error, "BRIDGE_BROKEN");
     // Not allowed to start it or make its temp folder: an environment problem, not a broken protocol.
-    if (isPermissionError(message)) throw fail("BRIDGE_BROKEN", `Couldn't start Claude Code (${path}): ${message}`, [SANDBOX_HINT, "Run `plugboard doctor` for details"]);
-    if (error instanceof AxiError || error instanceof DiscoveryTimeoutError) throw asAxiError(error);
+    if (isPermissionError(e.message)) throw fail("BRIDGE_BROKEN", `Couldn't start Claude Code (${path}): ${e.message}`, [...e.suggestions, "Run `plugboard doctor` for details"]);
+    const message = e.message;
     throw fail("BRIDGE_BROKEN", `Claude Code control protocol failed (${path}): ${message}`, [
       "Run `plugboard doctor` for details",
       "After a breaking update, set claude_path in policy.toml to an earlier Claude Code version (`plugboard doctor` names it)",
