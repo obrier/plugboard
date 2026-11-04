@@ -83,6 +83,20 @@ test("transforms.toml: its transforms apply; a profile written into it does not 
   expect(plan.decision).toBe('denied: Unknown profile "sneaky"');
 });
 
+test("with AXI on, an explicit --out keeps errors off stdout; without it, errors stay AXI on stdout", async () => {
+  const env = { PLUGBOARD_AXI: "1" };
+  for (const out of ["json", "md", "raw", "text"]) {
+    const r = await run(["gmail", "list-labels", "--out", out], { env });
+    expect(r.code).toBe(4);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("AUTH_REQUIRED");
+  }
+  const axi = await run(["gmail", "list-labels"], { env });
+  expect(axi.code).toBe(4);
+  expect(axi.stdout).toContain("AUTH_REQUIRED");
+  expect((await run(["gmail", "list-labels", "--out", "toon"], { env })).stdout).toContain("AUTH_REQUIRED");
+});
+
 test("auth: a needs-auth connector is AUTH_REQUIRED (exit 4) before any call", async () => {
   const r = await run(["gmail", "list-labels"]);
   expect(r.code).toBe(4);
