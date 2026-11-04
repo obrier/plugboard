@@ -2,7 +2,7 @@
 
 **Auth once. Plug into any agent.**
 
-<!-- badges: [brew version] [license MIT] [ci] [release] -->
+[![CI](https://img.shields.io/github/actions/workflow/status/aanduque/plugboard/ci.yml?branch=main&label=ci)](https://github.com/aanduque/plugboard/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/aanduque/plugboard?sort=semver)](https://github.com/aanduque/plugboard/releases) [![Homebrew](https://img.shields.io/badge/brew-aanduque%2Ftap%2Fplugboard-orange)](https://github.com/aanduque/homebrew-tap) [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey)](#platforms) [![License: MIT](https://img.shields.io/github/license/aanduque/plugboard)](LICENSE)
 
 Your claude.ai connectors (Slack, Gmail, Calendar, Drive, Datadog, Sentry, Figma, your org's custom ones) as shell commands. Any agent that can run a shell gets them: Codex, Gemini CLI, pi, Hermes, OpenCode, or a cron job. It reuses the Claude Code login you already have. No new OAuth, no API keys, no tokens held by a third party, and zero model tokens per call. Read-only by default; writes need a plan, a hash and a human.
 
@@ -162,7 +162,7 @@ plugboard slack send-message --arg-file reply.json --as executor --plan --out js
 plugboard slack send-message --arg-file reply.json --as executor --write --write-key reply-42 --expect-hash sha256:…
 ```
 
-This is a guard rail against bugs and confused automation, not a sandbox: any program running as you can run `claude` itself.
+This is a guard rail against bugs and confused automation, not a sandbox: any program running as you can run `claude` itself. The full trust model, and how to report a vulnerability privately, are in [SECURITY.md](SECURITY.md).
 
 ## Plugboard and the alternatives
 
