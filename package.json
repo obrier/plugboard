@@ -9,7 +9,7 @@
     "plugboard": "./dist/plugboard"
   },
   "scripts": {
-    "build": "bun build --target=bun --banner='#!/usr/bin/env bun' --outfile=dist/plugboard ./src/cli.ts && chmod +x dist/plugboard",
+    "build": "bun build --compile --minify --outfile=dist/plugboard ./src/cli.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "link": "bun run build && bun link"
