@@ -2,27 +2,27 @@
 # so the repository (or a separate release repository) must be public.
 class Plugboard < Formula
   desc "claude.ai connector tools as shell commands, at zero model tokens"
-  homepage "https://github.com/aanduque/plugboard"
+  homepage "https://github.com/obrier/plugboard"
   version "@VERSION@"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-darwin-arm64.tar.gz"
+      url "https://github.com/obrier/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-darwin-arm64.tar.gz"
       sha256 "@SHA_DARWIN_ARM64@"
     end
     on_intel do
-      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-darwin-x64.tar.gz"
+      url "https://github.com/obrier/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-darwin-x64.tar.gz"
       sha256 "@SHA_DARWIN_X64@"
     end
   end
   on_linux do
     on_arm do
-      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-linux-arm64.tar.gz"
+      url "https://github.com/obrier/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-linux-arm64.tar.gz"
       sha256 "@SHA_LINUX_ARM64@"
     end
     on_intel do
-      url "https://github.com/aanduque/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-linux-x64.tar.gz"
+      url "https://github.com/obrier/plugboard/releases/download/v@VERSION@/plugboard-@VERSION@-linux-x64.tar.gz"
       sha256 "@SHA_LINUX_X64@"
     end
   end

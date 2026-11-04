@@ -1,6 +1,6 @@
 # Releasing
 
-Plugboard ships only as compiled binaries through Homebrew ([aanduque/homebrew-tap](https://github.com/aanduque/homebrew-tap)). It is not published to npm: `package.json` stays `"private": true`.
+Plugboard ships only as compiled binaries through Homebrew ([obrier/homebrew-tap](https://github.com/obrier/homebrew-tap)). It is not published to npm: `package.json` stays `"private": true`.
 
 ## Versions
 
@@ -28,12 +28,12 @@ The tag starts [`.github/workflows/release.yml`](../.github/workflows/release.ym
 3. Create the GitHub release, with the four archives and generated notes.
 4. Push `Formula/plugboard.rb` to the tap.
 
-Step 4 authenticates with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap repository only. To revoke it, delete the key in the tap repo under Settings → Deploy keys. To replace it, generate a new key pair, add the public key there with write access, and run `gh secret set TAP_DEPLOY_KEY --repo aanduque/plugboard < key`.
+Step 4 authenticates with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap repository only. To revoke it, delete the key in the tap repo under Settings → Deploy keys. To replace it, generate a new key pair, add the public key there with write access, and run `gh secret set TAP_DEPLOY_KEY --repo obrier/plugboard < key`.
 
 Then check it:
 
 ```bash
-brew update && brew upgrade plugboard || brew install aanduque/tap/plugboard
+brew update && brew upgrade plugboard || brew install obrier/tap/plugboard
 plugboard --version
 ```
 
@@ -49,4 +49,4 @@ To build everything without publishing, run the workflow by hand: `gh workflow r
 
 ## Before the first public release
 
-Homebrew downloads release assets without credentials, so `aanduque/plugboard` must be public, or the archives must be attached to a release in a public repository. Until then, the workflow still publishes to the tap, but `brew install` can't download the archives, and the landing page doesn't deploy.
+Homebrew downloads release assets without credentials, so `obrier/plugboard` must be public, or the archives must be attached to a release in a public repository. Until then, the workflow still publishes to the tap, but `brew install` can't download the archives, and the landing page doesn't deploy.
