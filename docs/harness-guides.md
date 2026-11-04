@@ -83,6 +83,7 @@ Optional: `plugboard setup hooks` also installs the session-start hook for OpenC
 You already have the connectors in-session, so Plugboard is for the scripts and other agents on the same machine. Still, two things help:
 
 - `plugboard setup hooks` shows the home view at session start, so Claude Code knows what's scriptable.
+- Output is AXI by default inside Claude Code, since `CLAUDECODE` is set there. `PLUGBOARD_AXI=0` turns it off, and an explicit `--out` still wins.
 - `plugboard usage` ranks tools by how often your past sessions called them, which `plugboard <connector>` uses to order its listing.
 
 Writes from inside a Claude Code session are refused unless a profile sets `allow_in_agent = true`. Leave it off.
@@ -97,7 +98,7 @@ No instructions file. Gate on `doctor`, use `--out json`, and never put `--write
 set -euo pipefail
 plugboard doctor >/dev/null || exit $?          # 7 = some connectors blind, 10 = bridge broken
 
-plugboard slack search-public --keywords deploy --after -1d --out md
+plugboard slack search-public --keywords deploy --out md
 plugboard cal list-events --calendar-id primary --start-time today --end-time tomorrow \
   --items events --select summary,start.dateTime --out json | jq -r '.events[] | "\(.start.dateTime)  \(.summary)"'
 ```

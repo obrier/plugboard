@@ -71,6 +71,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     case "mcp_call": {
       const args = request.arguments;
       if (args?.action === "exit") process.exit(3);
+      if (args?.action === "env") { reply(id, { structuredContent: { value: process.env[args.name] ?? null } }); break; }
       if (args?.action === "fail") { reply(id, {}, "Connector needs authentication"); break; }
       timers.set(id, setTimeout(() => reply(id, {
         content: JSON.stringify({ tool: request.tool, value: args?.value }),

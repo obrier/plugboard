@@ -83,6 +83,20 @@ test("transforms.toml: its transforms apply; a profile written into it does not 
   expect(plan.decision).toBe('denied: Unknown profile "sneaky"');
 });
 
+test("with AXI on, an explicit --out keeps errors off stdout; without it, errors stay AXI on stdout", async () => {
+  const env = { PLUGBOARD_AXI: "1" };
+  for (const out of ["json", "md", "raw", "text"]) {
+    const r = await run(["gmail", "list-labels", "--out", out], { env });
+    expect(r.code).toBe(4);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("AUTH_REQUIRED");
+  }
+  const axi = await run(["gmail", "list-labels"], { env });
+  expect(axi.code).toBe(4);
+  expect(axi.stdout).toContain("AUTH_REQUIRED");
+  expect((await run(["gmail", "list-labels", "--out", "toon"], { env })).stdout).toContain("AUTH_REQUIRED");
+});
+
 test("auth: a needs-auth connector is AUTH_REQUIRED (exit 4) before any call", async () => {
   const r = await run(["gmail", "list-labels"]);
   expect(r.code).toBe(4);
@@ -210,7 +224,7 @@ test("doctor never probes a tool the profile denies", async () => {
   writeFileSync(join(root, "policy.toml"), `${POLICY}\n[profiles.narrow]\nmode = "read"\nallow = ["slack:*"]\ndeny = ["slack:slack_search_public"]\n`);
   const result = JSON.parse((await run(["doctor", "--as", "narrow", "--out", "json"])).stdout);
   expect(calls().map(c => c.tool)).not.toContain("mcp__claude_ai_Slack__slack_search_public");
-  expect(result.checks.find((c: { check: string }) => c.check === "read:slack")).toBeUndefined();
+  expect(result.checks.find((c: { check: string }) => c.check === "read:slack")).toMatchObject({ status: "info", detail: expect.stringContaining("not checked") });
 });
 
 test("doctor warns about aliases the policy defines, never about built-in ones", async () => {
@@ -218,6 +232,13 @@ test("doctor warns about aliases the policy defines, never about built-in ones",
   expect(await policyCheck()).not.toContain("aliases to unknown connectors");
   writeFileSync(join(root, "policy.toml"), `${POLICY}\n[aliases]\nmine = "no-such-connector"\n`);
   expect(await policyCheck()).toContain("aliases to unknown connectors: mine");
+});
+
+test("AXI is on by default inside Claude Code; PLUGBOARD_AXI=0 turns it off", async () => {
+  const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
+  expect((await run([], { env: { ...env, CLAUDECODE: "1" } })).all).toContain("connectors[2]");
+  expect((await run([], { env: { ...env, CLAUDECODE: "1", PLUGBOARD_AXI: "0" } })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
+  expect((await run([], { env })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
 });
 
 test("home, listing, help, find and policy never spawn claude; plain by default, AXI with --axi", async () => {
@@ -296,6 +317,19 @@ test("usage: counts only real tool calls, maps UUID-named connectors by tool nam
     expect(listTools(parsePolicy("", "p"), loadManifest("slack")!, { cap: 2, all: true }).tools).toHaveLength(4);
   } finally { delete process.env.PLUGBOARD_CACHE; }
   expect((await run(["slack", "--bogus"])).code).toBe(2);
+});
+
+test("doctor: a connector it can't probe gets a line saying so, not silence", async () => {
+  const path = join(root, "cache/manifests/slack.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  for (const tool of manifest.tools) tool.inputSchema.required = Object.keys(tool.inputSchema.properties ?? {}).slice(0, 1);
+  writeFileSync(path, JSON.stringify(manifest));
+  writeFileSync(join(fake, "gmail-connected"), "1");
+  const r = await run(["doctor", "--as", "gather", "--out", "json"]);
+  const checks: { check: string; status: string; detail: string }[] = JSON.parse(r.stdout).checks;
+  expect(checks.find(c => c.check === "read:slack")).toMatchObject({ status: "info", detail: expect.stringContaining("not checked") });
+  expect(checks.find(c => c.check === "read:gmail")?.status).toBe("ok");
+  expect(r.code).toBe(0); // info never changes the exit code
 });
 
 describe("batch --axi and full results on disk", () => {

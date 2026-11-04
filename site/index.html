@@ -140,8 +140,7 @@ connectors:
 
 <span class="c"># find a tool, read its flags, call it</span>
 <span class="k">$</span> plugboard find "search logs"
-<span class="k">$</span> plugboard slack search-public --keywords deploy \
-    --after -1d --out md
+<span class="k">$</span> plugboard slack search-public --keywords deploy --out md
 
 <span class="c"># from a script or cron: no model in the loop</span>
 <span class="k">$</span> plugboard cal list-events --calendar-id primary \
