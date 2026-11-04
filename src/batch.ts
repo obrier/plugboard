@@ -1,11 +1,11 @@
 import { parseArgs } from "node:util";
 import { encode } from "@toon-format/toon";
-import { AxiError } from "axi-sdk-js";
 import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
 import { asAxiError, EXIT, fail, retryAfterMs, type Code } from "./errors";
-import { invoke, parseDeadline, prepare, profileName, requireConnected, requireManifest, requireTool, type Prepared } from "./call";
-import { fileOf, itemCount, parseList, shape, unwrap } from "./output";
+import { parseDeadline, prepare, profileName, requireManifest, requireTool, type Prepared } from "./call";
+import { callRead, requireConnected } from "./core";
+import { fileOf, itemCount, parseList, shape } from "./output";
 import { newRun, writePrivate } from "./results";
 import { decide, loadPolicy } from "./policy";
 
@@ -65,7 +65,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
   let client: Client;
   try { client = await makeClient(); } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
-  let broken = false;
+  let stopped: Failure | undefined; // a broken bridge, or a model reached: the rest of the batch fails with it
   try {
     const names = [...new Set(tasks.map(t => t.p.manifest.connectorName))];
     const blind = new Map<string, Failure>(); // connector name → its failure, hints kept: the rest of its lines fail fast
@@ -83,7 +83,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
     const budgetEnd = Date.now() + o.budgetMs;
     await new Promise<void>(resolve => {
       const pump = () => {
-        if (broken) failAll(queue, { code: "BRIDGE_BROKEN", message: "Bridge failed during the batch" });
+        if (stopped) failAll(queue, stopped);
         if (Date.now() > budgetEnd) failAll(queue, { code: "TIMEOUT", message: "Batch budget exceeded" });
         for (let i = 0; i < queue.length && running < o.concurrency; i++) {
           const t = queue[i]!;
@@ -101,15 +101,16 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
         const started = Date.now();
         t.attempts++;
         try {
-          const raw = await invoke(client, t.p, t.deadline);
-          done(t.index, { id: t.id, ok: true, ms: Date.now() - started, result: shape(unwrap(raw), t.shape) });
+          const { value } = await callRead(async () => client, policy, o.profile, t.p, t.deadline); // the core's read, as the CLI's
+          done(t.index, { id: t.id, ok: true, ms: Date.now() - started, result: shape(value, t.shape) });
         } catch (error) {
           const e = errorOf(error);
           const name = t.p.manifest.connectorName;
-          if (e.code === "BRIDGE_BROKEN") broken = true;
+          if (e.code === "BRIDGE_BROKEN") stopped ??= { code: "BRIDGE_BROKEN", message: "Bridge failed during the batch" };
+          if (e.code === "COST_GUARD") stopped ??= { ...e, message: `Stopped: ${e.message}` };
           if (e.code === "AUTH_REQUIRED") blind.set(name, e);
           const again = (e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2);
-          if (again && !broken) {
+          if (again && !stopped) {
             if (e.code === "RATE_LIMITED") {
               caps.set(name, 1);
               await sleep(retryAfterMs(e.message) ?? backoffMs[t.attempts - 1]! * (1 + Math.random() * 0.2));
@@ -122,7 +123,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
       };
       pump();
     });
-    if (broken) return EXIT.BRIDGE_BROKEN;
+    if (stopped) return EXIT[stopped.code];
     try { await costGuard(client); } catch (error) {
       const e = errorOf(error);
       emit({ id: null, ok: false, error: { ...e, retryable: false } });

@@ -2,19 +2,17 @@ import { createHash } from "node:crypto";
 import Ajv, { type ValidateFunction } from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { AxiError } from "axi-sdk-js";
-import { appendAudit, keyState } from "./audit";
-import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import { findTool, loadIndex, loadManifest, nearNames, shortName, type Manifest, type ManifestTool } from "./cache";
-import { connect, costGuard } from "./claude";
-import { classify as classifyError, fail } from "./errors";
+import { connect } from "./claude";
+import { fail } from "./errors";
 import { kebab, mergeArgs, parseFlags, summaryOf, toolHelp, typeOf } from "./flags";
-import { defaultFormat, errorText, OUT_FORMATS, parseList, render, shape, unwrap } from "./output";
+import { defaultFormat, OUT_FORMATS, parseList, render, shape } from "./output";
 import { loadUsage } from "./usage";
-import { classify, decide, loadPolicy, profileFor, resolveConnector, type Policy, type ToolClass } from "./policy";
+import { classify, decide, loadPolicy, resolveConnector, type Policy, type ToolClass } from "./policy";
 import { formatTime, inFormat, parseTime } from "./time";
 
-export const BIN = "plugboard";
+import { BIN, callRead, callWrite, type OpenSession } from "./core";
+export { BIN };
 
 // --- lookup ---------------------------------------------------------------------
 
@@ -108,41 +106,6 @@ export function parseDeadline(value: unknown, fallback = 30_000): number {
   return Number(match[1]) * ({ ms: 1, s: 1000, m: 60_000 }[match[2] as "ms" | "s" | "m"] ?? 1000);
 }
 
-/** A live server must be connected; anything else is AUTH_REQUIRED (needs-auth, failed) or NOT_FOUND. */
-export function requireConnected(servers: ConnectorServer[], manifest: Manifest) {
-  const server = servers.find(s => s.name === manifest.connectorName);
-  if (!server) throw fail("NOT_FOUND", `${manifest.connectorName} is no longer listed by Claude Code`, [`Run \`${BIN} refresh\``]);
-  if (server.status !== "connected") throw fail("AUTH_REQUIRED", `${manifest.connectorName} is ${server.status}`, [
-    `Reconnect it in claude.ai → Settings → Connectors${server.error ? ` (${server.error.slice(0, 120)})` : ""}`,
-  ]);
-}
-
-export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepared, deadlineMs: number) {
-  let result: Record<string, any>;
-  try {
-    result = await client.request({ subtype: "mcp_call", tool: p.tool.sourceName, arguments: p.args }, { timeoutMs: deadlineMs });
-  } catch (error) {
-    const message = (error as Error).message;
-    throw fail(classifyError(message), message);
-  }
-  if (result.isError === true) {
-    const message = errorText(result);
-    throw fail(classifyError(message), message);
-  }
-  return result;
-}
-
-/** An id worth keeping as sent_ref: Slack ts, a message or event id, a permalink. */
-export function refOf(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  for (const key of ["ts", "message_ts", "messageId", "id", "eventId", "threadId", "permalink"]) {
-    const v = (value as any)[key];
-    if (typeof v === "string" || typeof v === "number") return String(v);
-  }
-  for (const v of Object.values(value)) if (v && typeof v === "object" && !Array.isArray(v)) { const r = refOf(v); if (r) return r; }
-  return undefined;
-}
-
 export const profileName = (globals: Record<string, string | boolean>) =>
   String(globals.as ?? process.env.PLUGBOARD_PROFILE ?? "default");
 
@@ -186,58 +149,19 @@ export async function runTool(connectorRef: string, args: string[]) {
   const deadline = parseDeadline(g.deadline);
   const shapeOpts = { select: parseList(g.select as string | undefined), where: g.where as string | undefined, items: g.items as string | undefined };
 
-  if (cls === "write") return runWrite(policy, p, profile, g, deadline, format, shapeOpts);
-
-  const client = await connect(policy);
+  // The CLI's session: opened by the core once the call is allowed, closed here whatever happens.
+  let client: Awaited<ReturnType<typeof connect>> | undefined;
+  const open: OpenSession = async () => (client = await connect(policy));
   try {
-    requireConnected(await client.waitForServers([manifest.connectorName]), manifest);
-    const raw = await invoke(client, p, deadline);
-    await costGuard(client);
-    return render({ raw, value: shape(unwrap(raw), shapeOpts), format, full: g.full === true });
-  } finally { await client.close(); }
-}
-
-async function runWrite(policy: Policy, p: Prepared, profile: string, g: Record<string, string | boolean>, deadline: number,
-  format: string, shapeOpts: Parameters<typeof shape>[1]) {
-  if (process.env.CLAUDECODE && !profileFor(policy, profile).allowInAgent)
-    throw fail("POLICY_DENIED", "Writes are refused inside a Claude Code session (CLAUDECODE is set)", ["Run the write from your own shell, or set allow_in_agent = true on its profile"]);
-  const key = g["write-key"];
-  if (typeof key !== "string" || !key) throw fail("VALIDATION_ERROR", "--write needs --write-key <k>", ["A key that names this one write, such as reply-42"]);
-  if (g["expect-hash"] !== p.hash) throw fail("POLICY_DENIED", `Payload hash ${p.hash} does not match --expect-hash ${g["expect-hash"] ?? "(missing)"}`, [
-    "The approved payload changed, or was never approved: run --plan and re-approve",
-  ]);
-  const { state, last } = keyState(key);
-  if (state === "ok") return { replayed: true, key, ref: last?.ref ?? null, at: last?.ts, help: ["Already sent under this key: nothing was called"] };
-  if (state === "unknown") throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} has no known outcome`, [
-    "Check the destination by hand, then run `plugboard audit resolve " + key + " --sent` or `--not-sent`",
-  ]);
-
-  const client = await connect(policy);
-  try {
-    requireConnected(await client.waitForServers([p.manifest.connectorName]), p.manifest);
-    const base = { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash };
-    appendAudit({ ...base, status: "attempt", pid: process.pid });
-    const started = Date.now();
-    let raw: Record<string, any>;
-    try {
-      raw = await invoke(client, p, deadline); // never retried
-    } catch (error) {
-      const code = error instanceof AxiError ? error.code : "UPSTREAM_ERROR";
-      if (code === "TIMEOUT" || code === "BRIDGE_BROKEN") {
-        appendAudit({ key, status: "unknown", code, ms: Date.now() - started });
-        throw fail("WRITE_OUTCOME_UNKNOWN", `Write ${key} may or may not have happened: ${(error as Error).message}`, [
-          "Check the destination by hand, then `plugboard audit resolve " + key + " --sent|--not-sent`",
-        ]);
-      }
-      appendAudit({ key, status: "error", code, message: (error as Error).message.slice(0, 300), ms: Date.now() - started });
-      throw error;
+    if (cls === "write") {
+      if (typeof g["write-key"] !== "string" || !g["write-key"]) throw fail("VALIDATION_ERROR", "--write needs --write-key <k>", ["A key that names this one write, such as reply-42"]);
+      const out = await callWrite(open, policy, p, { profile, key: g["write-key"], expectHash: String(g["expect-hash"] ?? ""), deadlineMs: deadline });
+      if (out.replayed) return { ...out, help: ["Already sent under this key: nothing was called"] };
+      return render({ raw: out.raw, value: shape(out.value, shapeOpts), format, full: g.full === true, header: { sent: true, key: out.key, ref: out.ref } });
     }
-    const value = unwrap(raw);
-    const ref = refOf(value);
-    appendAudit({ key, status: "ok", ms: Date.now() - started, result_sha256: createHash("sha256").update(JSON.stringify(raw)).digest("hex"), ...(ref ? { ref } : {}) });
-    try { await costGuard(client); } catch (error) { appendAudit({ key, status: "cost-guard", message: (error as Error).message }); throw error; }
-    return render({ raw, value: shape(value, shapeOpts), format, full: g.full === true, header: { sent: true, key, ref: ref ?? null } });
-  } finally { await client.close(); }
+    const out = await callRead(open, policy, profile, p, deadline);
+    return render({ raw: out.raw, value: shape(out.value, shapeOpts), format, full: g.full === true });
+  } finally { await client?.close(); }
 }
 
 /** With usage data (`plugboard usage`), used tools come first and the list is capped; --all shows everything. */

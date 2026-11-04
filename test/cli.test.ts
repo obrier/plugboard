@@ -443,3 +443,13 @@ test("usage says so when its counts can't be saved, instead of claiming it saved
   expect(r.all).not.toContain("Saved to the cache");
   expect(r.all).toContain("not saved");
 });
+
+test("batch: a session that stops being zero-cost stops the batch at that line, not at the end", async () => {
+  writeFileSync(join(fake, "cost"), "1");
+  const lines = ["a", "b", "c"].map(q => JSON.stringify({ id: q, connector: "slack", tool: "search-public", args: { query: q } })).join("\n");
+  const r = await run(["batch", "--as", "gather", "--ordered", "--concurrency", "1"], { stdin: lines });
+  const out = r.stdout.trim().split("\n").map(l => JSON.parse(l));
+  expect(r.code).toBe(10);
+  expect(out.map(o => o.error?.code)).toEqual(["COST_GUARD", "COST_GUARD", "COST_GUARD"]);
+  expect(calls()).toHaveLength(1); // a model was reached: no further call is made
+});
