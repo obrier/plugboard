@@ -43,6 +43,10 @@ To build everything without publishing, run the workflow by hand: `gh workflow r
 
 `scripts/release.sh` does the same locally, into `release/<version>/`.
 
+## Landing page
+
+`site/index.html` is the landing page: one static file, no build step. `.github/workflows/pages.yml` deploys it to GitHub Pages on every change to `site/`, but only once the repository is public. To turn it on, go to Settings → Pages → Source and choose GitHub Actions. To preview it locally, run `python3 -m http.server 4173 --directory site`.
+
 ## Before the first public release
 
-Homebrew downloads release assets without credentials, so `aanduque/plugboard` must be public, or the archives must be attached to a release in a public repository. Until then, the workflow still publishes to the tap, but `brew install` can't download the archives.
+Homebrew downloads release assets without credentials, so `aanduque/plugboard` must be public, or the archives must be attached to a release in a public repository. Until then, the workflow still publishes to the tap, but `brew install` can't download the archives, and the landing page doesn't deploy.

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>plugboard: auth once, plug into any agent</title>
+<meta name="description" content="Your claude.ai connectors as shell commands. Any agent that can run a shell gets them: Codex, Gemini CLI, pi, Hermes, OpenCode, or a cron job. Zero model tokens.">
+<meta property="og:title" content="plugboard: auth once, plug into any agent">
+<meta property="og:description" content="Your claude.ai connectors as shell commands for every AI agent and script. Read-only by default, zero model tokens.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e8590c'/%3E%3Cg fill='%23fff'%3E%3Ccircle cx='10' cy='10' r='3'/%3E%3Ccircle cx='22' cy='10' r='3'/%3E%3Ccircle cx='10' cy='22' r='3'/%3E%3Ccircle cx='22' cy='22' r='3'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #fbfaf8; --surface: #ffffff; --ink: #1c1b19; --muted: #5f5b55; --line: #e7e3dd;
+    --accent: #c2410c; --accent-soft: #fdeee4; --term-bg: #17161a; --term-ink: #e9e6e1; --term-dim: #8f8a83; --term-accent: #fb923c;
+    --warn-bg: #fff7e6; --warn-line: #f0d39b;
+    --radius: 12px; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121114; --surface: #1a191d; --ink: #ecebe8; --muted: #a39f99; --line: #2b2a2f;
+      --accent: #fb923c; --accent-soft: #2a1d14; --term-bg: #0b0b0d; --warn-bg: #241d10; --warn-line: #5c4a22;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121114; --surface: #1a191d; --ink: #ecebe8; --muted: #a39f99; --line: #2b2a2f;
+    --accent: #fb923c; --accent-soft: #2a1d14; --term-bg: #0b0b0d; --warn-bg: #241d10; --warn-line: #5c4a22;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 var(--sans); }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+  @media (min-width: 720px) { .wrap { padding: 0 32px; } }
+  code, pre, kbd { font-family: var(--mono); font-size: 0.88em; }
+  :not(pre) > code { background: var(--accent-soft); padding: 0.1em 0.35em; border-radius: 5px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--ink); text-decoration: none; }
+  .brand svg { width: 28px; height: 28px; }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 18px; font-size: 15px; }
+  nav a:hover { color: var(--ink); }
+  @media (max-width: 560px) { nav a.hide-sm { display: none; } }
+
+  .hero { padding: 48px 0 32px; display: grid; gap: 40px; }
+  @media (min-width: 900px) { .hero { grid-template-columns: 1fr 1.05fr; align-items: center; padding: 72px 0 48px; } }
+  h1 { font-size: clamp(34px, 6vw, 54px); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 18px; }
+  h1 span { color: var(--accent); }
+  .lede { font-size: 19px; color: var(--muted); margin: 0 0 26px; max-width: 34em; }
+  .install { display: flex; align-items: center; gap: 10px; background: var(--term-bg); color: var(--term-ink); border-radius: 10px; padding: 12px 14px; font-family: var(--mono); font-size: 15px; max-width: 100%; }
+  .install .p { color: var(--term-dim); user-select: none; }
+  .install code { background: none; padding: 0; overflow-x: auto; white-space: nowrap; flex: 1; }
+  .install button { flex: none; background: transparent; border: 1px solid #3a3840; color: var(--term-ink); border-radius: 7px; padding: 4px 10px; font: 13px var(--sans); cursor: pointer; }
+  .install button:hover { border-color: var(--term-accent); }
+  .cta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; font-size: 15px; }
+
+  .term { background: var(--term-bg); color: var(--term-ink); border-radius: var(--radius); box-shadow: 0 18px 50px -20px rgb(0 0 0 / 0.45); overflow: hidden; min-width: 0; }
+  .term .bar { display: flex; gap: 7px; padding: 12px 14px; border-bottom: 1px solid #26252a; }
+  .term .bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a3840; }
+  .term pre { margin: 0; padding: 16px 18px 20px; overflow-x: auto; line-height: 1.55; font-size: 13.5px; }
+  .term .c { color: var(--term-dim); } .term .k { color: var(--term-accent); } .term .s { color: #a7d3a1; }
+
+  .agents { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+  .agents li { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 12px; font-size: 14px; color: var(--muted); }
+
+  section { padding: 44px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: clamp(24px, 3.4vw, 32px); letter-spacing: -0.01em; margin: 0 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 46em; }
+  .grid { display: grid; gap: 16px; }
+  @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; display: flex; gap: 10px; align-items: baseline; }
+  .card h3 b { color: var(--accent); font-family: var(--mono); font-size: 15px; }
+  .card p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  .flow { display: grid; gap: 12px; align-items: center; }
+  @media (min-width: 820px) { .flow { grid-template-columns: 1fr auto 1fr auto 1fr; } }
+  .flow .node { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+  .flow .node strong { display: block; margin-bottom: 4px; }
+  .flow .node span { color: var(--muted); font-size: 15px; }
+  .flow .arrow { color: var(--accent); font-size: 22px; text-align: center; }
+  @media (max-width: 819px) { .flow .arrow { transform: rotate(90deg); } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .tagline-line { margin-top: 18px; font-style: italic; color: var(--muted); }
+
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: var(--radius); padding: 18px 20px; }
+  .warn ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+  .warn li { margin: 4px 0; }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 44px; color: var(--muted); font-size: 14px; display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="#">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><g fill="#fff"><circle cx="10" cy="10" r="3"/><circle cx="22" cy="10" r="3"/><circle cx="10" cy="22" r="3"/><circle cx="22" cy="22" r="3"/></g><path d="M10 10 C 16 14, 16 18, 22 22" stroke="#fff" stroke-width="2" fill="none"/></svg>
+      plugboard
+    </a>
+    <nav>
+      <a class="hide-sm" href="#why">Why</a>
+      <a class="hide-sm" href="#safety">Safety</a>
+      <a href="#compare">Compare</a>
+      <a href="https://github.com/aanduque/plugboard">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <div>
+      <h1>Auth once.<br><span>Plug into any agent.</span></h1>
+      <p class="lede">Your claude.ai connectors (Slack, Gmail, Calendar, Drive, Datadog, Sentry, Figma, your org's custom ones) as shell commands. Any agent that can run a shell gets them. It reuses the Claude Code login you already have, with zero model tokens per call.</p>
+      <div class="install">
+        <span class="p">$</span><code id="install-cmd">brew install aanduque/tap/plugboard</code>
+        <button type="button" id="copy">Copy</button>
+      </div>
+      <div class="cta">
+        <a href="https://github.com/aanduque/plugboard#quick-start">Quick start →</a>
+        <a href="https://github.com/aanduque/plugboard/blob/main/docs/harness-guides.md">Use it from your agent →</a>
+      </div>
+      <ul class="agents" aria-label="Works with">
+        <li>Codex</li><li>Gemini CLI</li><li>pi</li><li>Hermes</li><li>OpenCode</li><li>Claude Code</li><li>bash &amp; cron</li>
+      </ul>
+    </div>
+    <div class="term" role="img" aria-label="Terminal session using plugboard">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="c"># every connector you've connected in claude.ai</span>
+<span class="k">$</span> plugboard
+connectors:
+  ID               STATUS     READ  WRITE
+  slack            connected  12    7
+  gmail            connected  6     24
+  google-calendar  connected  5     4
+  datadog          connected  314   177
+
+<span class="c"># find a tool, read its flags, call it</span>
+<span class="k">$</span> plugboard find "search logs"
+<span class="k">$</span> plugboard slack search-public --keywords deploy \
+    --after -1d --out md
+
+<span class="c"># from a script or cron: no model in the loop</span>
+<span class="k">$</span> plugboard cal list-events --calendar-id primary \
+    --start-time today --end-time tomorrow \
+    --items events --select summary <span class="s">--out json</span></pre>
+    </div>
+  </div>
+
+  <section id="why">
+    <h2>Connectors shouldn't stop at the chat window</h2>
+    <p class="sub">Connectors give Claude access to your tools, but only inside Claude. Every other agent re-authenticates each service in its own MCP client, keeps its own tokens, and pays schema tokens up front. Scripts can't use connectors at all.</p>
+    <div class="grid">
+      <div class="card"><h3><b>01</b>One login, every agent</h3><p>Connect a service once in claude.ai. Codex, Gemini CLI, pi, Hermes, OpenCode and your scripts can all call it. No new OAuth, no API keys, and no third party holding your tokens.</p></div>
+      <div class="card"><h3><b>02</b>Safe by default</h3><p>Read-only unless a policy profile says otherwise. Writes need a plan, its exact hash and an idempotency key. They're never retried, always audited, and refused from inside agent sessions.</p></div>
+      <div class="card"><h3><b>03</b>Deterministic</h3><p>The same command makes the same call, with no model in the loop. Cron jobs, CI checks and batch pipelines just work, and every run proves it cost $0 and 0 tokens.</p></div>
+      <div class="card"><h3><b>04</b>New connectors, no wrappers</h3><p>When a connector appears in claude.ai, <code>plugboard refresh</code> makes it a command. There's no community MCP server to wait for, and no CLI to write.</p></div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="sub">plugboard drives Claude Code's JSON control protocol directly. Claude Code makes the call with the connections you already set up; plugboard never sees a token.</p>
+    <div class="flow">
+      <div class="node"><strong>Any agent or script</strong><span>runs <code>plugboard slack …</code></span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="node"><strong>plugboard</strong><span>checks the policy, validates the flags against the tool's schema, keeps the audit log</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="node"><strong>Claude Code</strong><span>calls the claude.ai connector with your login. No model is involved.</span></div>
+    </div>
+    <p class="sub" style="margin-top:22px">Agents find tools on demand with <code>plugboard find</code> and <code>--help</code>, so nothing sits in their context until it's needed. With <code>--axi</code> they get compact <a href="https://github.com/kunchenguid/axi">AXI</a> output with next-step hints.</p>
+  </section>
+
+  <section id="safety">
+    <h2>The agent proposes. A human approves.</h2>
+    <p class="sub">A write sends only the exact bytes someone approved. If the payload changes by a single byte, the hash no longer matches and nothing is sent.</p>
+    <div class="term"><div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="c"># 1. draft: prints the payload and its hash, sends nothing</span>
+<span class="k">$</span> plugboard slack send-message --arg-file reply.json --as executor --plan
+
+<span class="c"># 2. a human checks it, then sends exactly that payload</span>
+<span class="k">$</span> plugboard slack send-message --arg-file reply.json --as executor \
+    --write --write-key reply-42 --expect-hash sha256:8c6f…</pre></div>
+  </section>
+
+  <section id="compare">
+    <h2>Where it fits</h2>
+    <p class="sub">plugboard isn't the only way to give agents tools. It's the one that reuses what you already connected.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>Calls</th><th>You authenticate</th><th>Reaches claude.ai connectors</th></tr></thead>
+        <tbody>
+          <tr><td>plugboard</td><td>The connectors in your claude.ai</td><td>Once, in claude.ai</td><td>Yes</td></tr>
+          <tr><td><a href="https://github.com/steipete/mcporter">MCPorter</a></td><td>Any MCP server you configure</td><td>Per server, in its vault</td><td>No</td></tr>
+          <tr><td>Composio / Rube</td><td>A hosted catalog of apps</td><td>Once, and they hold the tokens</td><td>No</td></tr>
+          <tr><td>Native harness MCP</td><td>Servers configured in that harness</td><td>Per server, per harness</td><td>Claude Code only</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="tagline-line">MCPorter calls the MCP servers you configure. plugboard calls the connectors you already have. They work fine side by side.</p>
+  </section>
+
+  <section id="caveats">
+    <div class="warn">
+      <strong>Read this before you depend on it.</strong>
+      <ul>
+        <li>plugboard drives an <strong>internal, undocumented</strong> Claude Code interface. It can break with any update; <code>plugboard doctor</code> tells you when.</li>
+        <li>It is <strong>not affiliated with or endorsed by Anthropic</strong>, and using connectors this way may not be covered by their terms.</li>
+        <li>You need macOS or Linux, and Claude Code logged in with a claude.ai account that has the connectors you want.</li>
+        <li>Tool output is data. Don't let one agent's results steer another's writes without a human in between.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <span>plugboard is MIT licensed. Not affiliated with Anthropic.</span>
+    <span><a href="https://github.com/aanduque/plugboard">GitHub</a> · <a href="https://github.com/aanduque/plugboard#readme">Docs</a> · <a href="https://github.com/aanduque/homebrew-tap">Homebrew tap</a></span>
+  </footer>
+</div>
+<script>
+  document.getElementById("copy").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      await navigator.clipboard.writeText(document.getElementById("install-cmd").textContent);
+      button.textContent = "Copied";
+    } catch {
+      button.textContent = "Select it";
+    }
+    setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  });
+</script>
+</body>
+</html>
