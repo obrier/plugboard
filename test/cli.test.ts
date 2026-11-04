@@ -83,13 +83,6 @@ test("transforms.toml: its transforms apply; a profile written into it does not 
   expect(plan.decision).toBe('denied: Unknown profile "sneaky"');
 });
 
-test("AXI is on by default inside Claude Code; PLUGBOARD_AXI=0 turns it off", async () => {
-  const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
-  expect((await run([], { env: { ...env, CLAUDECODE: "1" } })).all).toContain("connectors[2]");
-  expect((await run([], { env: { ...env, CLAUDECODE: "1", PLUGBOARD_AXI: "0" } })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
-  expect((await run([], { env })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
-});
-
 test("auth: a needs-auth connector is AUTH_REQUIRED (exit 4) before any call", async () => {
   const r = await run(["gmail", "list-labels"]);
   expect(r.code).toBe(4);
@@ -225,6 +218,13 @@ test("doctor warns about aliases the policy defines, never about built-in ones",
   expect(await policyCheck()).not.toContain("aliases to unknown connectors");
   writeFileSync(join(root, "policy.toml"), `${POLICY}\n[aliases]\nmine = "no-such-connector"\n`);
   expect(await policyCheck()).toContain("aliases to unknown connectors: mine");
+});
+
+test("AXI is on by default inside Claude Code; PLUGBOARD_AXI=0 turns it off", async () => {
+  const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
+  expect((await run([], { env: { ...env, CLAUDECODE: "1" } })).all).toContain("connectors[2]");
+  expect((await run([], { env: { ...env, CLAUDECODE: "1", PLUGBOARD_AXI: "0" } })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
+  expect((await run([], { env })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);
 });
 
 test("home, listing, help, find and policy never spawn claude; plain by default, AXI with --axi", async () => {
