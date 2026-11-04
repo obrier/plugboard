@@ -1,5 +1,7 @@
+import { encode } from "@toon-format/toon";
 import { compileExpression } from "filtrex";
 import { fail } from "./errors";
+import { newRun, writePrivate } from "./results";
 
 const tryJson = (text: string): unknown => { try { return JSON.parse(text); } catch { return undefined; } };
 
@@ -118,6 +120,25 @@ export function truncate(value: unknown, limit = 1500): { value: unknown; cut: n
   return { value: walk(value), cut };
 }
 
+/** A result as a file. Text (Slack's markdown, Sentry's and Datadog's text) stays text, not one escaped
+ * string: Claude Code's Read cuts lines over 2,000 chars. Anything else is TOON. */
+export function fileOf(value: unknown): { ext: string; text: string } {
+  const md = markdownOf(value);
+  return md !== undefined && md.includes("\n") ? { ext: "md", text: md } : { ext: "toon", text: encode(value) };
+}
+function spill(value: unknown): string {
+  const { ext, text } = fileOf(value);
+  return writePrivate(newRun("r"), `result.${ext}`, text);
+}
+
+/** The length of a result's one obvious list (as --where finds it), if it has one. */
+export function itemCount(value: unknown): number | undefined {
+  try {
+    const at = locate(value);
+    return at === undefined ? undefined : (at === null ? (value as unknown[]) : getPath(value, at)).length;
+  } catch { return undefined; }
+}
+
 /** --out md: a string result, or an object holding one string (Slack's {"results": "# …"}). */
 export function markdownOf(value: unknown): string | undefined {
   if (typeof value === "string") return value;
@@ -167,7 +188,8 @@ export function render(o: { raw: unknown; value: unknown; format: string; full: 
     return o.header ? `${plainText(o.header)}\n${body}` : body;
   }
   const { value, cut } = o.full ? { value: o.value, cut: 0 } : truncate(o.value);
-  const help = cut ? [`${cut} long string(s) cut at 1500 chars: add --full`] : [];
+  // Nothing is lost: the full result goes to a private file the hint names.
+  const help = cut ? [`${cut} long string(s) cut at 1500 chars; full result: ${spill(o.value)} (or add --full)`] : [];
   if (o.format === "md") {
     const md = markdownOf(value);
     if (md !== undefined) return md + (help.length ? `\n\n(${help[0]})` : "");

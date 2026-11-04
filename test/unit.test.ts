@@ -237,7 +237,16 @@ describe("output", () => {
   test("md prints Slack's string fields; toon cuts long strings unless --full; json never does", () => {
     expect(markdownOf({ results: "# r", pagination_info: "next" })).toBe("# r\n\nnext");
     const long = "x".repeat(2000);
-    expect(JSON.stringify(render({ raw: {}, value: { long }, format: "toon", full: false }))).toContain("cut at 1500");
+    const state = process.env.PLUGBOARD_STATE;
+    process.env.PLUGBOARD_STATE = mkdtempSync(join(tmpdir(), "plugboard-render-")); // the cut result is written there
+    try {
+      const out = JSON.stringify(render({ raw: {}, value: { long }, format: "toon", full: false }));
+      expect(out).toContain("cut at 1500");
+      expect(readFileSync(/full result: ([^ ]+)/.exec(out)![1]!, "utf8")).toContain(long);
+    } finally {
+      rmSync(process.env.PLUGBOARD_STATE, { recursive: true, force: true });
+      if (state === undefined) delete process.env.PLUGBOARD_STATE; else process.env.PLUGBOARD_STATE = state;
+    }
     expect(render({ raw: {}, value: { long }, format: "json", full: false })).toBe(JSON.stringify({ long }));
     expect(render({ raw: { content: "r" }, value: {}, format: "raw", full: false })).toBe('{"content":"r"}');
   });

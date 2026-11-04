@@ -130,6 +130,28 @@ Each output line is `{"id","ok":true,"ms","result"}` or `{"id","ok":false,"error
 - **Auth failures:** one auth failure fails the rest of that connector's lines at once.
 - **Reads only:** batch never runs write tools.
 
+For agents, `--axi` writes every result in full to its own file and prints a manifest instead of JSON lines:
+
+```
+run: ~/.local/state/plugboard/results/b-7f3a2c
+results[3]{id,ok,ms,items,tokens,file}:
+  today,true,551,4,~420,today.toon
+  mentions,true,1376,null,~12K,mentions.md
+  labels,false,812,null,null,null
+errors[1]{id,code,message}:
+  labels,AUTH_REQUIRED,…
+inline:
+  today: …
+help[2]: "1 result(s) not inlined (~12K tokens): read the files you need",…
+```
+
+- **Nothing is cut:** text results (Slack, Sentry, Datadog) are written as text, anything else as TOON.
+- **Bounded output:** small results go inline up to about 15,000 characters, below the 30,000 at which Claude Code saves Bash output to a file. `--inline none|all|id,id` overrides it. Token counts are estimates.
+- **Only the flag:** `PLUGBOARD_AXI=1` and Claude Code sessions keep JSON lines, so `batch | jq` still works.
+- **Private:** the folder is `0700`, files `0600`, and runs older than a day are removed by the next run.
+
+A single `--axi` call cuts strings at 1,500 characters; when it does, it writes the full result the same way and its hint names the file.
+
 ## Safety model
 
 Plugboard is read-only unless you configure otherwise.
@@ -270,7 +292,7 @@ Rules:
 | `~/.config/plugboard/policy.toml` | Profiles, aliases | `PLUGBOARD_POLICY` |
 | `~/.config/plugboard/transforms.toml` | Time transforms only; nothing else in it is read | `PLUGBOARD_TRANSFORMS` |
 | `~/.cache/plugboard/` | Tool schemas per connector, usage counts | `PLUGBOARD_CACHE` |
-| `~/.local/state/plugboard/` | Audit log, last doctor result | `PLUGBOARD_STATE` |
+| `~/.local/state/plugboard/` | Audit log, last doctor result, `results/` (full results from `batch --axi` and cut AXI calls, kept a day) | `PLUGBOARD_STATE` |
 | `~/.local/bin/claude` | The Claude Code binary to drive | `PLUGBOARD_CLAUDE`, or `claude_path` in the policy |
 
 `PLUGBOARD_PROFILE` sets the default profile, and `PLUGBOARD_AXI=1` the AXI output.

@@ -35,5 +35,5 @@ You'll get an acknowledgement within a week. A fix or mitigation follows as soon
 
 **What to keep in mind:**
 - **Tool output is untrusted data.** Messages, emails and documents can contain text written to manipulate an AI. Don't let an agent feed one tool's output into another call's arguments, or into a write, without a human in between. The plan → hash → write flow exists for this.
-- **The cache holds tool schemas, not tool results.** Results only go where you send them: stdout, your files, your agent's context.
+- **The cache holds tool schemas, not tool results.** Results go where you send them: stdout, your files, your agent's context. One exception: `batch --axi`, and an AXI call whose output is cut, write full results under `~/.local/state/plugboard/results/` (folders `0700`, files `0600`). That can include mail and chat; each run removes the runs older than a day.
 - **Plugboard drives an internal Claude Code interface.** An update can change its behaviour. `plugboard doctor` checks the protocol and the cost guard; run it as a gate in automation.

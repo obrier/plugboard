@@ -55,6 +55,8 @@ export function dirs(c = realCtx()) {
 // Explicit overrides win (tests use them).
 export const cacheDir = (c = realCtx()) => (c.env.PLUGBOARD_CACHE ? expandHome(c.env.PLUGBOARD_CACHE, c) : dirs(c).cache);
 export const stateDir = (c = realCtx()) => (c.env.PLUGBOARD_STATE ? expandHome(c.env.PLUGBOARD_STATE, c) : dirs(c).state);
+/** Full results written for agents (batch --axi, cut single calls): private, kept a day. */
+export const resultsDir = (c = realCtx()) => pathFor(c).join(stateDir(c), "results");
 export const policyPath = (c = realCtx()) =>
   (c.env.PLUGBOARD_POLICY ? expandHome(c.env.PLUGBOARD_POLICY, c) : pathFor(c).join(dirs(c).config, "policy.toml"));
 

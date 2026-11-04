@@ -1,15 +1,17 @@
 import { parseArgs } from "node:util";
+import { encode } from "@toon-format/toon";
 import { AxiError } from "axi-sdk-js";
 import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
 import { EXIT, fail, retryAfterMs, type Code } from "./errors";
 import { invoke, parseDeadline, prepare, profileName, requireConnected, requireManifest, requireTool, type Prepared } from "./call";
-import { parseList, shape, unwrap } from "./output";
+import { fileOf, itemCount, parseList, shape, unwrap } from "./output";
+import { newRun, writePrivate } from "./results";
 import { decide, loadPolicy } from "./policy";
 
 type Line = { id?: unknown; connector?: unknown; tool?: unknown; args?: unknown; select?: unknown; where?: unknown; items?: unknown; deadline?: unknown };
 type Task = { id: unknown; index: number; p: Prepared; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
-type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: { code: Code; message: string; retryable: boolean; attempts?: number } };
+export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: { code: Code; message: string; retryable: boolean; attempts?: number } };
 
 const errorOf = (error: unknown) => ({
   code: (error instanceof AxiError ? error.code : "UPSTREAM_ERROR") as Code,
@@ -20,8 +22,8 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export type BatchOptions = { profile: string; concurrency: number; perConnector: number; ordered: boolean; budgetMs: number };
 export type Client = Pick<ClaudeConnectors, "request" | "waitForServers" | "close">;
 
-/** JSONL in → JSONL out on one client. Reads only; each line fails on its own. */
-export async function runBatch(input: string, o: BatchOptions, emit: (line: string) => void, makeClient: () => Promise<Client>, backoffMs = [1000, 4000]): Promise<number> {
+/** JSONL in → one result per line out, on one client. Reads only; each line fails on its own. */
+export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) => void, makeClient: () => Promise<Client>, backoffMs = [1000, 4000]): Promise<number> {
   const policy = loadPolicy();
   const outputs: (Out | undefined)[] = [];
   let failed = 0;
@@ -29,8 +31,8 @@ export async function runBatch(input: string, o: BatchOptions, emit: (line: stri
   const done = (index: number, out: Out) => {
     if (!out.ok) failed++;
     outputs[index] = out;
-    if (!o.ordered) return emit(JSON.stringify(out));
-    while (outputs[next] !== undefined) emit(JSON.stringify(outputs[next++]));
+    if (!o.ordered) return emit(out);
+    while (outputs[next] !== undefined) emit(outputs[next++]!);
   };
 
   const tasks: Task[] = [];
@@ -121,26 +123,77 @@ export async function runBatch(input: string, o: BatchOptions, emit: (line: stri
     if (broken) return EXIT.BRIDGE_BROKEN;
     try { await costGuard(client); } catch (error) {
       const e = errorOf(error);
-      emit(JSON.stringify({ id: null, ok: false, error: { ...e, retryable: false } }));
+      emit({ id: null, ok: false, error: { ...e, retryable: false } });
       return EXIT.COST_GUARD;
     }
     return failed ? EXIT.PARTIAL : EXIT.OK;
   } finally { await client.close(); }
 }
 
-export async function batchCommand(argv: string[]): Promise<number> {
+const INLINE_BUDGET = 15_000; // characters: well under the 30,000 at which Claude Code saves Bash output to a file
+/** An estimate: about 2.4 characters per token on connector results. */
+function tokens(chars: number) {
+  const n = Math.ceil(chars / 2.4);
+  return n < 1000 ? `~${n}` : `~${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`;
+}
+
+/** --axi: every result in full in its own private file; a manifest in input order; small results inline
+ * within a budget, so the output's size is bounded and known. `inline` is "none", "all" or a list of ids. */
+export function axiSummary(outs: Out[], inline?: string) {
+  let dir: string | undefined;
+  const used = new Set<string>();
+  const rows = outs.map((out, index) => {
+    if (!out.ok) return { out, row: { id: String(out.id ?? ""), ok: false, ms: out.ms ?? null, items: null, tokens: null, file: null } };
+    const { ext, text } = fileOf(out.result);
+    let base = String(out.id).replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 60) || "result";
+    if (used.has(base)) base = `${base}-${index}`;
+    used.add(base);
+    dir ??= newRun("b");
+    writePrivate(dir, `${base}.${ext}`, text);
+    return { out, base, chars: text.length, row: { id: String(out.id), ok: true, ms: out.ms ?? null, items: itemCount(out.result) ?? null, tokens: tokens(text.length), file: `${base}.${ext}` } };
+  });
+  const wanted = inline && inline !== "all" && inline !== "none" ? new Set(parseList(inline)) : undefined;
+  let budget = inline === "all" ? Infinity : inline === "none" ? 0 : INLINE_BUDGET;
+  const inlined: Record<string, unknown> = {};
+  let skipped = 0, skippedChars = 0;
+  for (const r of rows) if (r.out.ok) {
+    const take = wanted ? wanted.has(r.row.id) : r.chars! <= budget;
+    if (!take) { skipped++; skippedChars += r.chars!; continue; }
+    if (!wanted) budget -= r.chars!;
+    inlined[r.row.id in inlined ? r.base! : r.row.id] = r.out.result;
+  }
+  const errors = outs.filter(o => !o.ok).map(o => ({ id: String(o.id ?? ""), code: o.error!.code, message: o.error!.message }));
+  return {
+    run: dir ?? "",
+    results: rows.map(r => r.row),
+    ...(errors.length ? { errors } : {}),
+    ...(Object.keys(inlined).length ? { inline: inlined } : {}),
+    help: [
+      ...(skipped ? [`${skipped} result(s) not inlined (${tokens(skippedChars)} tokens): read the files you need`] : []),
+      ...(dir ? [`grep -l <word> ${dir}/* finds a word across results; files are private and removed after a day`] : []),
+    ],
+  };
+}
+
+export async function batchCommand(argv: string[], axi = false): Promise<number> {
   let values: Record<string, string | boolean | undefined>;
   try {
     ({ values } = parseArgs({ args: argv, strict: true, allowPositionals: false, options: {
-      as: { type: "string" }, concurrency: { type: "string" }, ordered: { type: "boolean" }, budget: { type: "string" },
+      as: { type: "string" }, concurrency: { type: "string" }, ordered: { type: "boolean" }, budget: { type: "string" }, inline: { type: "string" },
     } }));
-  } catch (error) { throw fail("VALIDATION_ERROR", (error as Error).message, ["usage: plugboard batch [--as <profile>] [--concurrency 4] [--ordered] [--budget 5m] < calls.jsonl"]); }
+  } catch (error) { throw fail("VALIDATION_ERROR", (error as Error).message, ["usage: plugboard batch [--as <profile>] [--concurrency 4] [--ordered] [--budget 5m] [--axi [--inline none|all|id,id]] < calls.jsonl"]); }
+  if (values.inline !== undefined && !axi) throw fail("VALIDATION_ERROR", "--inline needs --axi");
   const policy = loadPolicy();
   const concurrency = values.concurrency === undefined ? policy.limits.concurrency : Number(values.concurrency);
   if (!Number.isInteger(concurrency) || concurrency < 1) throw fail("VALIDATION_ERROR", "--concurrency must be a positive whole number");
   const input = await Bun.stdin.text();
-  return runBatch(input, {
+  const options = {
     profile: profileName(values as Record<string, string>), concurrency, perConnector: policy.limits.perConnector,
-    ordered: values.ordered === true, budgetMs: parseDeadline(values.budget, 300_000),
-  }, line => process.stdout.write(`${line}\n`), () => connect(policy));
+    ordered: values.ordered === true || axi, budgetMs: parseDeadline(values.budget, 300_000),
+  };
+  if (!axi) return runBatch(input, options, out => process.stdout.write(`${JSON.stringify(out)}\n`), () => connect(policy));
+  const outs: Out[] = [];
+  const code = await runBatch(input, options, out => outs.push(out), () => connect(policy));
+  process.stdout.write(`${encode(axiSummary(outs, values.inline as string | undefined))}\n`);
+  return code;
 }
