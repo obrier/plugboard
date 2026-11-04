@@ -404,4 +404,12 @@ test("doctor: a state folder it can't write doesn't fail the check; it says so",
   const result = JSON.parse(r.stdout);
   expect(result.checks.find((c: { check: string }) => c.check === "state")).toMatchObject({ status: "warn", detail: expect.stringContaining("not saved") });
   expect(r.code).toBe(0);
+  expect((await run(["doctor", "--as", "gather", "--strict"], { env: { PLUGBOARD_STATE: blocked } })).code).toBe(7); // a warning, under --strict
+});
+
+test("a doctor.json cut short (disk full, say) never breaks the home view", async () => {
+  writeFileSync(join(root, "state", "doctor.json"), '{"claude":"2.1');
+  const r = await run([]);
+  expect(r.code).toBe(0);
+  expect(r.stdout).toContain("connectors");
 });

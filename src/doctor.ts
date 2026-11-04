@@ -31,8 +31,10 @@ export async function probe<T extends { name: string }>(tools: T[], call: (tool:
 
 const KNOWN_MESSAGE_TYPES = new Set(["control_response", "system"]);
 export const doctorPath = () => join(stateDir(), "doctor.json");
-export const lastDoctor = (): Record<string, any> | undefined =>
-  existsSync(doctorPath()) ? JSON.parse(readFileSync(doctorPath(), "utf8")) : undefined;
+/** The last result, if one was saved whole; a file that doesn't parse counts as none, so it can't break the home view. */
+export const lastDoctor = (): Record<string, any> | undefined => {
+  try { return existsSync(doctorPath()) ? JSON.parse(readFileSync(doctorPath(), "utf8")) : undefined; } catch { return undefined; }
+};
 
 /** Connectors a profile names explicitly: those are required; `*:` patterns require nothing. */
 export const requiredConnectors = (profile: Profile) =>
