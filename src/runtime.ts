@@ -25,7 +25,8 @@ export type Runtime = {
   /** Resolves once the process started; rejects with the errno (EACCES, ENOENT) when it can't. */
   spawn(cmd: string[], o: { cwd: string; env: Env }): Promise<Proc>;
   spawnSync(cmd: string[], o: { env: Env }): { exitCode: number | null; stdout: string };
-  /** A fetch handler on 127.0.0.1, on a free port. */
+  /** A fetch handler on 127.0.0.1, on a free port. A handler that throws answers 500; a body that fails
+   * mid-response is cut short, and its status may already be sent (Bun sends its own; Node answers 500). */
   serve(fetch: (request: Request) => Promise<Response>): Promise<Server>;
 };
 
@@ -94,7 +95,8 @@ export const nodeRuntime: Runtime = {
         res.end(body);
       } catch {
         // Before the head is sent, answer 500; after, the response can only be cut short.
-        if (res.headersSent) res.destroy(); else res.writeHead(500).end();
+        if (res.headersSent) res.destroy();
+        else { for (const name of res.getHeaderNames()) res.removeHeader(name); res.writeHead(500).end(); } // none of the failed response's headers
       }
     });
     return new Promise((resolve, reject) => {

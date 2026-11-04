@@ -16,13 +16,15 @@ const fixture = join(process.cwd(), "test/fixtures/claude-control.ts");
 const checks: string[] = [];
 const check = async (name: string, run: () => Promise<void> | void) => { await run(); checks.push(name); };
 
-await check("connect, discovery, a call, a request timeout, close, then the closed error", async () => {
+await check("connect, discovery, a call, schema capture, a request timeout, close, then the closed error", async () => {
   const client = await ClaudeConnectors.connect({ claudePath: fixture, requestTimeoutMs: 2_000 });
   try {
     const tools = await client.listTools();
     assert.deepEqual(tools.map(tool => tool.name), ["mcp__claude_ai_Mail__search", "mcp__claude_ai_Drive__search"]);
     const result = await client.callTool("mcp__claude_ai_Drive__search", { value: "résumé" });
     assert.deepEqual(result.structuredContent, { tool: "mcp__claude_ai_Drive__search", value: "résumé" });
+    const withSchemas = await client.listTools({ includeSchemas: true }); // schema capture: Node's loopback server and a second spawn
+    assert.deepEqual(withSchemas.map(tool => typeof tool.inputSchema), ["object", "object"]);
     await assert.rejects(client.request({ subtype: "mcp_call", tool: "mcp__claude_ai_Drive__search", arguments: { delay: 5_000 } }, { timeoutMs: 200 }), /Timed out waiting for mcp_call/);
   } finally { await client.close(); }
   await assert.rejects(client.request({ subtype: "get_session_cost" }));
