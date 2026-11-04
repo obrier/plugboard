@@ -2,15 +2,47 @@
 
 plugboard ships only as compiled binaries through Homebrew ([aanduque/homebrew-tap](https://github.com/aanduque/homebrew-tap)). It is not published to npm: `package.json` stays `"private": true`.
 
-1. Bump `version` in `package.json` and commit.
-2. Run `scripts/release.sh`. It runs the tests, compiles standalone binaries (`bun build --compile`) for darwin-arm64, darwin-x64, linux-arm64 and linux-x64, packs each with LICENSE, README and `policy.example.toml`, and renders `release/<version>/plugboard.rb` from `packaging/homebrew/plugboard.rb.in`. It publishes nothing.
-3. Create the GitHub release:
+## Versions
 
-   ```bash
-   gh release create v<version> release/<version>/*.tar.gz
-   ```
+- **`version` in `package.json` is the single source of truth.** `plugboard --version` reads it, and the formula and archive names come from it.
+- **Semver, staying on `0.x`** while the internal Claude Code protocol can still force breaking changes.
+  - **patch:** fixes;
+  - **minor:** new commands or flags, and anything that changes output or exit codes;
+  - **major:** once the interface is stable.
+- **The git tag is `v<version>`.** The release workflow refuses a tag that doesn't match `package.json`.
 
-4. Copy `release/<version>/plugboard.rb` to `Formula/plugboard.rb` in `aanduque/homebrew-tap`, then commit and push.
-5. Check it: `brew update && brew install aanduque/tap/plugboard && plugboard --version`.
+## Cutting a release
 
-Homebrew downloads release assets without credentials, so this repository must be public, or the archives must be attached to a release in a public repository.
+```bash
+npm version patch          # or minor / major: bumps package.json, commits, and tags vX.Y.Z
+git push --follow-tags
+```
+
+The tag starts [`.github/workflows/release.yml`](../.github/workflows/release.yml):
+1. Check that the tag matches `package.json`.
+2. Run `scripts/release.sh`:
+   - run the offline tests;
+   - compile the binaries with `bun build --compile` for darwin-arm64, darwin-x64, linux-arm64 and linux-x64;
+   - pack each one with LICENSE, README and `policy.example.toml`;
+   - render `plugboard.rb` from `packaging/homebrew/plugboard.rb.in`.
+3. Create the GitHub release, with the four archives and generated notes.
+4. Push `Formula/plugboard.rb` to the tap.
+
+Step 4 authenticates with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap repository only. To revoke it, delete the key in the tap repo under Settings → Deploy keys. To replace it, generate a new key pair, add the public key there with write access, and run `gh secret set TAP_DEPLOY_KEY --repo aanduque/plugboard < key`.
+
+Then check it:
+
+```bash
+brew update && brew upgrade plugboard || brew install aanduque/tap/plugboard
+plugboard --version
+```
+
+## Dry run
+
+To build everything without publishing, run the workflow by hand: `gh workflow run release.yml`, or **Run workflow** in the Actions tab. The archives and the formula come back as a workflow artifact named `plugboard-release`.
+
+`scripts/release.sh` does the same locally, into `release/<version>/`.
+
+## Before the first public release
+
+Homebrew downloads release assets without credentials, so `aanduque/plugboard` must be public, or the archives must be attached to a release in a public repository. Until then, the workflow still publishes to the tap, but `brew install` can't download the archives.
