@@ -14,7 +14,7 @@ import { classify, decide, parsePolicy } from "../src/policy";
 import { formatTime, parseTime } from "../src/time";
 import { setupCommand } from "../src/cli";
 import { probe } from "../src/doctor";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -417,4 +417,16 @@ describe("full results on disk", () => {
       if (saved === undefined) delete process.env.PLUGBOARD_STATE; else process.env.PLUGBOARD_STATE = saved;
     }
   });
+});
+
+test("writeJson: its temp file is its own, so another writer's never blocks or clobbers it", () => {
+  const { writeJson } = require("../src/platform");
+  const dir = mkdtempSync(join(tmpdir(), "plugboard-write-"));
+  try {
+    const path = join(dir, "x.json");
+    mkdirSync(`${path}.tmp`); // what a shared temp name would collide with
+    writeJson(path, { a: 1 });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ a: 1 });
+    expect(readdirSync(dir).sort()).toEqual(["x.json", "x.json.tmp"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

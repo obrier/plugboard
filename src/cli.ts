@@ -111,7 +111,7 @@ function usageCommand(args: string[]) {
   const top = Object.entries(usage.counts).sort((a, b) => b[1] - a[1]).slice(0, Number(values.top ?? 15))
     .map(([key, uses]) => ({ connector: key.split(":")[0]!, tool: shortName(key.split(":")[0]!, key.slice(key.indexOf(":") + 1)), uses }));
   return { days, transcripts: usage.files, calls: usage.calls, top,
-    help: [`Saved to the cache: \`${BIN} <connector>\` now lists the most-used tools first (20 at most; --all for the rest)`] };
+    help: usage.help ?? [`Saved to the cache: \`${BIN} <connector>\` now lists the most-used tools first (20 at most; --all for the rest)`] };
 }
 
 function policyCommand(args: string[]) {

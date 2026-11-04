@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { captureConnectorSchemas } from "./bridge/capture";
 import type { ConnectorServer } from "./bridge/client";
 import { claudePath, claudeVersion, connect } from "./claude";
 import { asAxiError, fail } from "./errors";
-import { cacheDir } from "./platform";
+import { cacheDir, writeJson } from "./platform";
 import type { Policy } from "./policy";
 
 export type Annotations = { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
@@ -30,11 +30,6 @@ export function annotationsOf(tool: ConnectorServer["tools"][number]): Annotatio
   };
 }
 
-function writeJson(path: string, value: unknown) {
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(`${path}.tmp`, JSON.stringify(value));
-  renameSync(`${path}.tmp`, path); // atomic: a reader never sees half a manifest
-}
 const readJson = <T>(path: string): T | undefined => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined);
 
 export const loadIndex = () => readJson<CacheIndex>(join(cacheDir(), "index.json"));

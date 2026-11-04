@@ -1,12 +1,15 @@
-import { existsSync, readdirSync, statSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadManifest, manifestIds, sourceName } from "./cache";
-import { cacheDir, claudeConfigDir, expandHome } from "./platform";
+import { cacheDir, claudeConfigDir, expandHome, saveJson } from "./platform";
 
 export type Usage = { generatedAt: string; days: number; files: number; calls: number; counts: Record<string, number> };
 
 export const usagePath = () => join(cacheDir(), "usage.json");
-export const loadUsage = (): Usage | undefined => (existsSync(usagePath()) ? JSON.parse(readFileSync(usagePath(), "utf8")) : undefined);
+/** Saved counts, if whole; a file that doesn't parse counts as none. */
+export const loadUsage = (): Usage | undefined => {
+  try { return existsSync(usagePath()) ? JSON.parse(readFileSync(usagePath(), "utf8")) : undefined; } catch { return undefined; }
+};
 const transcriptsDir = () => (process.env.PLUGBOARD_TRANSCRIPTS ? expandHome(process.env.PLUGBOARD_TRANSCRIPTS) : join(claudeConfigDir(), "projects"));
 
 function transcripts(dir: string, since: number): string[] {
@@ -20,7 +23,7 @@ function transcripts(dir: string, since: number): string[] {
 /** Connector tool calls in Claude Code transcripts, counted as `connector:tool`.
  * CLI sessions name tools `mcp__claude_ai_Slack__…`; desktop sessions use a UUID instead of the
  * connector name, so those are matched by tool name and skipped when the name is ambiguous. */
-export function scanUsage(days = 30): Usage {
+export function scanUsage(days = 30): Usage & { help?: string[] } {
   const byPrefix = new Map<string, string>(); // full source name → connector:tool
   const byTool = new Map<string, string[]>(); // bare tool name → connector:tool candidates
   for (const id of manifestIds()) {
@@ -54,7 +57,6 @@ export function scanUsage(days = 30): Usage {
     }
   }
   const usage = { generatedAt: new Date().toISOString(), days, files: files.length, calls, counts };
-  mkdirSync(cacheDir(), { recursive: true });
-  writeFileSync(usagePath(), JSON.stringify(usage));
-  return usage;
+  const notSaved = saveJson(usagePath(), usage); // best effort: the counts are returned either way, and say so
+  return notSaved ? { ...usage, help: [`Counts not saved (${notSaved}), so tool listings keep their old order`] } : usage;
 }
