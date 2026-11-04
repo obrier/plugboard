@@ -2,7 +2,7 @@
 // policy before a session opens; a write is refused, replayed or audited here, never by the caller.
 import { createHash } from "node:crypto";
 import { AxiError } from "axi-sdk-js";
-import { alive, appendAudit, claimKey, keyState } from "./audit";
+import { appendAudit, claimKey, keyState, type AuditEntry } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
 import { prepare, requireManifest, requireTool, type Prepared } from "./call";
@@ -88,6 +88,14 @@ export async function callRead(open: OpenSession, policy: Policy, profile: strin
   return { raw, value: unwrap(raw) };
 }
 
+/** An attempt with no outcome yet, still within its deadline (and a minute's grace): another write is running it.
+ * An older one crashed or lost its answer: its outcome is unknown. */
+function inFlight(last: AuditEntry | undefined) {
+  if (last?.status !== "attempt") return false;
+  const deadline = typeof last.deadline_ms === "number" ? last.deadline_ms : 30_000;
+  return Date.now() - Date.parse(last.ts) < deadline + 60_000;
+}
+
 export type WriteRequest = { profile: string; key: string; expectHash: string; deadlineMs: number };
 export type WriteResult =
   | { replayed: true; key: string; ref: string | null; at?: string }
@@ -105,10 +113,10 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   if (expectHash !== p.hash) throw fail("POLICY_DENIED", `Payload hash ${p.hash} does not match the approved hash ${expectHash || "(missing)"}`, [
     "The approved payload changed, or was never approved: plan it again and approve the new hash",
   ]);
-  const replayOrRefuse = ({ state, last }: ReturnType<typeof keyState>): WriteResult | undefined => {
+  const replayOrRefuse = ({ state, last }: { state: string; last?: AuditEntry }): WriteResult | undefined => {
     if (state === "ok") return { replayed: true, key, ref: (last?.ref as string | undefined) ?? null, at: last?.ts };
-    if (state === "unknown" && last?.status === "attempt" && typeof last.pid === "number" && alive(last.pid))
-      throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} is in progress (process ${last.pid})`, [
+    if (state === "unknown" && inFlight(last))
+      throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} is in progress (process ${last!.pid})`, [
         "Wait for it to finish, then run the same write again: it replays the result",
       ]);
     if (state === "unknown") throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} has no known outcome`, [
@@ -122,15 +130,18 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const session = await open();
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
   // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
-  let claim: Awaited<ReturnType<typeof claimKey>>;
+  let claim: ReturnType<typeof claimKey>;
   try {
-    claim = await claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid });
+    claim = claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid, deadline_ms: req.deadlineMs });
   } catch (error) { // the audit log can't record the attempt: nothing is sent
     const e = asAxiError(error);
     throw fail(e.code as Code, `Write ${key} was not sent: ${e.message}`, e.suggestions);
   }
-  const claimed = replayOrRefuse(claim);
-  if (claimed) return claimed;
+  if (!claim.claimed) {
+    const lost = replayOrRefuse(claim);
+    if (lost) return lost;
+    throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} is in progress`, ["Wait for it to finish, then run the same write again: it replays the result"]);
+  }
   const started = Date.now();
   let raw: Record<string, any>;
   try {

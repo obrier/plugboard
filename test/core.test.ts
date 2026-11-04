@@ -167,29 +167,18 @@ describe("what is approved is what is sent", () => {
   });
 });
 
-describe("the audit lock", () => {
-  const lockPath = () => join(root, "state", "audit.lock");
+describe("claiming a key: the audit log decides", () => {
   const hash = () => planCall(policy, "executor", send).hash;
-  const write = (key: string) => callWrite(fakeSession().open, policy, send, { profile: "executor", key, expectHash: hash(), deadlineMs: 1_000 });
 
-  test("a lock left by a dead process is taken over at once", async () => {
-    writeJson(lockPath(), { pid: 999_999_9 }); // no such process
-    const started = Date.now();
-    expect(await write("k-dead").then(() => "OK")).toBe("OK");
-    expect(Date.now() - started).toBeLessThan(1_000);
-  });
-
-  test("waiting for a live holder doesn't block the event loop, and giving up is a coded error that says nothing was sent", async () => {
-    writeJson(lockPath(), { pid: process.pid }); // held by a live process: this one
-    let ticks = 0;
-    const timer = setInterval(() => ticks++, 50);
-    try {
-      const error = await write("k-held").then(() => undefined, (e: { code?: string; message: string }) => e);
-      expect(error?.code).toBe("TIMEOUT");
-      expect(error?.message).toContain("not sent");
-      expect(ticks).toBeGreaterThan(5);
-    } finally { clearInterval(timer); }
-  }, 15_000);
+  test("16 processes claiming one key at once: exactly one claims it, and every other attempt is withdrawn", async () => {
+    const at = Date.now() + 1_500;
+    const procs = Array.from({ length: 16 }, () => Bun.spawn(["bun", join(import.meta.dir, "fixtures/claim-key.ts"), String(at)], { env: process.env, stdout: "pipe" }));
+    const outs = await Promise.all(procs.map(p => new Response(p.stdout).text()));
+    expect(outs.map(o => o.trim()).filter(o => o === "claimed")).toHaveLength(1);
+    const entries = readAudit();
+    // late starters refuse in their pre-check without appending; every attempt appended but the winner's is withdrawn
+    expect(entries.filter(e => e.status === "attempt").length - entries.filter(e => e.status === "withdrawn").length).toBe(1);
+  }, 20_000);
 
   test("a duplicate racing a write still in flight is told it's in progress, not to resolve it by hand", async () => {
     const s = fakeSession({ delayMs: 100 });
@@ -197,5 +186,13 @@ describe("the audit lock", () => {
     const results = await Promise.all([callWrite(s.open, policy, send, req), callWrite(s.open, policy, send, req)].map(p => p.then(() => "sent", (e: Error) => e.message)));
     expect(results.filter(r => r === "sent")).toHaveLength(1);
     expect(results.find(r => r !== "sent")).toContain("in progress");
+  });
+
+  test("an attempt from long ago with no outcome is unknown, not in progress", async () => {
+    writeJson(join(root, "state", "seed.json"), {}); // the state folder exists
+    writeFileSync(join(root, "state", "audit.jsonl"), JSON.stringify({ ts: "2026-10-01T00:00:00Z", key: "old", status: "attempt", pid: process.pid, deadline_ms: 30_000 }) + "\n");
+    const error = await callWrite(fakeSession().open, policy, send, { profile: "executor", key: "old", expectHash: hash(), deadlineMs: 1_000 }).then(() => undefined, (e: Error & { code?: string }) => e);
+    expect(error?.code).toBe("WRITE_OUTCOME_UNKNOWN");
+    expect(error?.message).toContain("no known outcome");
   });
 });
