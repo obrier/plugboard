@@ -2,7 +2,7 @@
 // policy before a session opens; a write is refused, replayed or audited here, never by the caller.
 import { createHash } from "node:crypto";
 import { AxiError } from "axi-sdk-js";
-import { appendAudit, claimKey, keyState, type AuditEntry } from "./audit";
+import { appendAudit, claimKey, keyState, readAudit, type AuditEntry } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
 import { prepare, requireManifest, requireTool, type Prepared } from "./call";
@@ -124,7 +124,8 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
     ]);
     return undefined;
   };
-  const early = replayOrRefuse(keyState(key)); // no session for a key already sent or unresolved
+  const seen = readAudit(); // the claim below loses to any attempt that lands after this read
+  const early = replayOrRefuse(keyState(key, seen)); // no session for a key already sent or unresolved
   if (early) return early;
 
   const session = await open();
@@ -132,7 +133,7 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
   let claim: ReturnType<typeof claimKey>;
   try {
-    claim = claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid, deadline_ms: req.deadlineMs });
+    claim = claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid, deadline_ms: req.deadlineMs }, seen.length);
   } catch (error) { // the audit log can't record the attempt: nothing is sent
     const e = asAxiError(error);
     throw fail(e.code as Code, `Write ${key} was not sent: ${e.message}`, e.suggestions);
@@ -140,6 +141,9 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   if (!claim.claimed) {
     const lost = replayOrRefuse(claim);
     if (lost) return lost;
+    if (claim.state === "error") throw fail("UPSTREAM_ERROR", `A concurrent write under key ${key} failed${typeof claim.last?.message === "string" ? `: ${claim.last.message}` : ""}`, [
+      "Nothing was sent by this call. Run the write again to retry",
+    ]);
     throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} is in progress`, ["Wait for it to finish, then run the same write again: it replays the result"]);
   }
   const started = Date.now();

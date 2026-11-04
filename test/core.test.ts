@@ -196,3 +196,27 @@ describe("claiming a key: the audit log decides", () => {
     expect(error?.message).toContain("no known outcome");
   });
 });
+
+describe("claims that lose to a rival", () => {
+  const hash = () => planCall(policy, "executor", send).hash;
+  test("a duplicate racing a write that then fails does not resend: retrying after an error is a new call", async () => {
+    const fail500 = fakeSession({ fail: new Error("upstream 500: internal error"), delayMs: 50 });
+    const slow = fakeSession();
+    const req = { profile: "executor", key: "dup", expectHash: hash(), deadlineMs: 1_000 };
+    // B opens its session slowly, so A's attempt and error both land before B claims.
+    const slowOpen = async () => { await new Promise(r => setTimeout(r, 150)); return slow.open(); };
+    const results = await Promise.all([callWrite(fail500.open, policy, send, req), callWrite(slowOpen, policy, send, req)].map(p => p.then(() => "sent", (e: { code?: string }) => e.code)));
+    expect(fail500.sent.length + slow.sent.length).toBe(1);
+    expect(results).not.toContain("sent");
+  });
+  test("a losing attempt left by a crash after a send doesn't make the sent write read as unknown", async () => {
+    writeJson(join(root, "state", "seed.json"), {});
+    const lines = [
+      { ts: new Date().toISOString(), key: "k", status: "attempt", nonce: "w", pid: 1, deadline_ms: 1_000 },
+      { ts: new Date().toISOString(), key: "k", status: "ok", ref: "1730.1" },
+      { ts: new Date().toISOString(), key: "k", status: "attempt", nonce: "l", pid: 2, deadline_ms: 1_000 }, // crashed before its withdrawal
+    ];
+    writeFileSync(join(root, "state", "audit.jsonl"), lines.map(l => JSON.stringify(l)).join("\n") + "\n");
+    expect(await callWrite(fakeSession().open, policy, send, { profile: "executor", key: "k", expectHash: hash(), deadlineMs: 1_000 })).toMatchObject({ replayed: true, ref: "1730.1" });
+  });
+});

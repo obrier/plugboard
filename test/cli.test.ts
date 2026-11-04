@@ -155,6 +155,22 @@ test("write: a timeout is WRITE_OUTCOME_UNKNOWN (exit 6), blocks the key until r
   expect(calls()).toHaveLength(1);
 });
 
+test("audit: the listing leaves out attempts that lost a claim, and their withdrawals", async () => {
+  mkdirSync(join(root, "state"), { recursive: true });
+  const ts = new Date().toISOString();
+  const lines = [
+    { ts, key: "k-1", status: "attempt", nonce: "won" },
+    { ts, key: "k-1", status: "attempt", nonce: "lost" },
+    { ts, key: "k-1", status: "withdrawn", nonce: "lost" },
+    { ts, key: "k-1", status: "ok", ref: "1.2" },
+  ];
+  writeFileSync(join(root, "state/audit.jsonl"), lines.map(l => JSON.stringify(l)).join("\n") + "\n");
+  const out = (await run(["audit"])).all;
+  expect(out).toContain("won");
+  expect(out).not.toContain("lost");
+  expect(out).not.toContain("withdrawn");
+});
+
 test("write: refused inside a Claude Code session unless the profile allows it", async () => {
   const hash = await planHash(SEND);
   const tail = ["--write", "--write-key", "out-3", "--expect-hash", hash];
