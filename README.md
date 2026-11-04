@@ -292,7 +292,7 @@ Tool argument schemas aren't part of `mcp_status`. `plugboard refresh` captures 
 ```bash
 bun install
 bun test                             # offline: unit tests and CLI tests against a fake claude
-LIVE=1 bun test test/live.test.ts    # read-only calls against your real connectors
+plugboard refresh && LIVE=1 bun test test/live.test.ts  # read-only calls against your connected connectors, then doctor
 bun run typecheck && bun run link    # builds dist/plugboard and links it on your PATH
 ```
 
