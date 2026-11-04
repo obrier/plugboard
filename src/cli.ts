@@ -148,7 +148,11 @@ export function setupCommand(args: string[], options: { homeDir?: string; projec
   return {
     setup: values.remove ? "hooks removed" : "hooks installed or already up to date", scope,
     claude: status.claude.installed, codex: status.codex.installed, opencode: status.opencode.installed,
-    help: values.remove ? [] : [`Run \`${BIN} setup hooks${values.project ? " --project" : ""} --remove\` to undo`],
+    help: values.remove ? [] : [
+      // Codex skips a hook nobody has trusted yet, without saying so.
+      ...(status.codex.installed ? ["Codex runs the hook only once you trust it: open `codex` and accept \"Hooks need review\", or use /hooks. `codex exec` never asks"] : []),
+      `Run \`${BIN} setup hooks${values.project ? " --project" : ""} --remove\` to undo`,
+    ],
   };
 }
 

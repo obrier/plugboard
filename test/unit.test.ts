@@ -343,6 +343,10 @@ test("setup hooks installs and removes a project-scope session-start hook", () =
   try {
     const installed = setupCommand(["hooks", "--project"], { homeDir: dir, projectDir: dir });
     expect(installed.claude).toBe(true);
+    expect(installed.codex).toBe(true);
+    expect(installed.help.join(" ")).toContain("/hooks"); // Codex runs it only once trusted
+    expect(setupCommand(["hooks", "--project", "--remove"], { homeDir: dir, projectDir: dir }).help.join(" ")).not.toContain("/hooks");
+    setupCommand(["hooks", "--project"], { homeDir: dir, projectDir: dir });
     expect(readFileSync(join(dir, ".claude/settings.json"), "utf8")).toMatch(/"command": "[^"]*plugboard --axi"/);
     expect(setupCommand(["hooks", "--project", "--remove"], { homeDir: dir, projectDir: dir }).claude).toBe(false);
     expect(code(() => setupCommand(["nope"], { homeDir: dir, projectDir: dir }))).toBe("VALIDATION_ERROR");

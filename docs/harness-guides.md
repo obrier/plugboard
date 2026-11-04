@@ -43,7 +43,19 @@ Rules:
 
 Codex reads `AGENTS.md` in the project root (and `~/.codex/AGENTS.md` for all projects). Paste the block there.
 
-Optional: `plugboard setup hooks` installs a session-start hook so Codex sees the home view (`plugboard --axi`) at the start of every session, without spawning Claude Code. `--project` limits it to this repository; `--remove` undoes it.
+Codex's sandbox blocks Plugboard by default: allow what [Sandboxes](#sandboxes) lists. In `~/.codex/config.toml`:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+writable_roots = ["~/.local/state/plugboard", "~/.cache/plugboard"]
+```
+
+Use your folders if `PLUGBOARD_STATE`, `PLUGBOARD_CACHE` or the XDG variables move them; `~` works there, `$HOME` doesn't. Checked with Codex 0.161.0: `read-only`, the default for `codex exec`, can't start Claude Code, and `workspace-write` without network can't reach claude.ai.
+
+Optional: `plugboard setup hooks` installs a session-start hook so Codex sees the home view (`plugboard --axi`) at the start of every session, without spawning Claude Code. `--project` limits it to this repository; `--remove` undoes it. Codex runs a hook only once you trust it: the next interactive `codex` shows "Hooks need review"; accept it there, or later with `/hooks`. `codex exec` never asks, and skips an untrusted hook without a word.
 
 ## Gemini CLI
 
@@ -87,6 +99,16 @@ You already have the connectors in-session, so Plugboard is for the scripts and 
 - `plugboard usage` ranks tools by how often your past sessions called them, which `plugboard <connector>` uses to order its listing.
 
 Writes from inside a Claude Code session are refused unless a profile sets `allow_in_agent = true`. Leave it off.
+
+## Sandboxes
+
+Plugboard drives Claude Code, which reaches claude.ai, so a sandboxed agent must allow:
+- **network access**, for Claude Code to reach claude.ai;
+- **writes to the temp folder** (`$TMPDIR`), where each run starts Claude Code;
+- **writes to `~/.cache/plugboard`**, where `refresh` saves each connector's tools; the first call on a machine runs it. Without it, Plugboard finds no connectors. Running `plugboard refresh` once outside the sandbox also works, until a connector or Claude Code changes;
+- **writes to `~/.local/state/plugboard`**, for `doctor`'s last result, the full results of output cut short, `batch --axi`'s result files, and the audit log of writes. Without it, reads still work: `doctor` warns that it couldn't save, a cut result only offers `--full`, and `batch --axi` puts every result inline; a write is refused before it is sent, since it can't be audited.
+
+When the network or the temp folder is blocked, Claude Code can't start and Plugboard exits 10; a blocked folder fails with its own error. Both carry a hint that links here. [Codex](#codex) shows the settings for its sandbox.
 
 ## Plain bash and cron
 
