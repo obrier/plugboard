@@ -1,6 +1,6 @@
 # Releasing
 
-plugboard ships only as compiled binaries through Homebrew ([aanduque/homebrew-tap](https://github.com/aanduque/homebrew-tap)). It is not published to npm: `package.json` stays `"private": true`.
+Plugboard ships only as compiled binaries through Homebrew ([aanduque/homebrew-tap](https://github.com/aanduque/homebrew-tap)). It is not published to npm: `package.json` stays `"private": true`.
 
 ## Versions
 

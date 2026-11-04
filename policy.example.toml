@@ -1,4 +1,4 @@
-# plugboard policy. Path: $PLUGBOARD_POLICY, else ~/.config/plugboard/policy.toml.
+# Plugboard policy. Path: $PLUGBOARD_POLICY, else ~/.config/plugboard/policy.toml.
 # Patterns are connector:tool with * globs. Globs only ever grant READ tools; a write tool must be
 # named exactly in a profile with mode = "write". deny beats allow. No profile → "default".
 version = 1

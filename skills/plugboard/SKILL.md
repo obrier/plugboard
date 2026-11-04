@@ -3,7 +3,7 @@ name: plugboard
 description: Call claude.ai connector tools (Slack, Gmail, Google Calendar, Drive, Datadog, Sentry, Figma, and others) from the shell or scripts at zero model tokens with `plugboard`. Use for scripted or batch connector reads, preflight checks of the connector bridge, or finding which connector tool does something. Read-only from agents; never pass --write.
 ---
 
-# plugboard
+# Plugboard
 
 - **Always pass `--axi`** (or set `PLUGBOARD_AXI=1`): it gives compact TOON output with `help[]` hints. Without it, output is plain text for humans.
 

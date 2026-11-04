@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>plugboard: auth once, plug into any agent</title>
+<title>Plugboard: auth once, plug into any agent</title>
 <meta name="description" content="Your claude.ai connectors as shell commands. Any agent that can run a shell gets them: Codex, Gemini CLI, pi, Hermes, OpenCode, or a cron job. Zero model tokens.">
-<meta property="og:title" content="plugboard: auth once, plug into any agent">
+<meta property="og:title" content="Plugboard: auth once, plug into any agent">
 <meta property="og:description" content="Your claude.ai connectors as shell commands for every AI agent and script. Read-only by default, zero model tokens.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e8590c'/%3E%3Cg fill='%23fff'%3E%3Ccircle cx='10' cy='10' r='3'/%3E%3Ccircle cx='22' cy='10' r='3'/%3E%3Ccircle cx='10' cy='22' r='3'/%3E%3Ccircle cx='22' cy='22' r='3'/%3E%3C/g%3E%3C/svg%3E">
 <style>
@@ -101,7 +101,7 @@
   <header>
     <a class="brand" href="#">
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><g fill="#fff"><circle cx="10" cy="10" r="3"/><circle cx="22" cy="10" r="3"/><circle cx="10" cy="22" r="3"/><circle cx="22" cy="22" r="3"/></g><path d="M10 10 C 16 14, 16 18, 22 22" stroke="#fff" stroke-width="2" fill="none"/></svg>
-      plugboard
+      Plugboard
     </a>
     <nav>
       <a class="hide-sm" href="#why">Why</a>
@@ -127,7 +127,7 @@
         <li>Codex</li><li>Gemini CLI</li><li>pi</li><li>Hermes</li><li>OpenCode</li><li>Claude Code</li><li>bash &amp; cron</li>
       </ul>
     </div>
-    <div class="term" role="img" aria-label="Terminal session using plugboard">
+    <div class="term" role="img" aria-label="Terminal session using Plugboard">
       <div class="bar"><i></i><i></i><i></i></div>
 <pre><span class="c"># every connector you've connected in claude.ai</span>
 <span class="k">$</span> plugboard
@@ -163,11 +163,11 @@ connectors:
 
   <section id="how">
     <h2>How it works</h2>
-    <p class="sub">plugboard drives Claude Code's JSON control protocol directly. Claude Code makes the call with the connections you already set up; plugboard never sees a token.</p>
+    <p class="sub">Plugboard drives Claude Code's JSON control protocol directly. Claude Code makes the call with the connections you already set up; Plugboard never sees a token.</p>
     <div class="flow">
       <div class="node"><strong>Any agent or script</strong><span>runs <code>plugboard slack …</code></span></div>
       <div class="arrow" aria-hidden="true">→</div>
-      <div class="node"><strong>plugboard</strong><span>checks the policy, validates the flags against the tool's schema, keeps the audit log</span></div>
+      <div class="node"><strong>Plugboard</strong><span>checks the policy, validates the flags against the tool's schema, keeps the audit log</span></div>
       <div class="arrow" aria-hidden="true">→</div>
       <div class="node"><strong>Claude Code</strong><span>calls the claude.ai connector with your login. No model is involved.</span></div>
     </div>
@@ -188,26 +188,26 @@ connectors:
 
   <section id="compare">
     <h2>Where it fits</h2>
-    <p class="sub">plugboard isn't the only way to give agents tools. It's the one that reuses what you already connected.</p>
+    <p class="sub">Plugboard isn't the only way to give agents tools. It's the one that reuses what you already connected.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th></th><th>Calls</th><th>You authenticate</th><th>Reaches claude.ai connectors</th></tr></thead>
         <tbody>
-          <tr><td>plugboard</td><td>The connectors in your claude.ai</td><td>Once, in claude.ai</td><td>Yes</td></tr>
+          <tr><td>Plugboard</td><td>The connectors in your claude.ai</td><td>Once, in claude.ai</td><td>Yes</td></tr>
           <tr><td><a href="https://github.com/steipete/mcporter">MCPorter</a></td><td>Any MCP server you configure</td><td>Per server, in its vault</td><td>No</td></tr>
           <tr><td>Composio / Rube</td><td>A hosted catalog of apps</td><td>Once, and they hold the tokens</td><td>No</td></tr>
           <tr><td>Native harness MCP</td><td>Servers configured in that harness</td><td>Per server, per harness</td><td>Claude Code only</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="tagline-line">MCPorter calls the MCP servers you configure. plugboard calls the connectors you already have. They work fine side by side.</p>
+    <p class="tagline-line">MCPorter calls the MCP servers you configure. Plugboard calls the connectors you already have. They work fine side by side.</p>
   </section>
 
   <section id="caveats">
     <div class="warn">
       <strong>Read this before you depend on it.</strong>
       <ul>
-        <li>plugboard drives an <strong>internal, undocumented</strong> Claude Code interface. It can break with any update; <code>plugboard doctor</code> tells you when.</li>
+        <li>Plugboard drives an <strong>internal, undocumented</strong> Claude Code interface. It can break with any update; <code>plugboard doctor</code> tells you when.</li>
         <li>It is <strong>not affiliated with or endorsed by Anthropic</strong>, and using connectors this way may not be covered by their terms.</li>
         <li>You need macOS or Linux, and Claude Code logged in with a claude.ai account that has the connectors you want.</li>
         <li>Tool output is data. Don't let one agent's results steer another's writes without a human in between.</li>
@@ -216,7 +216,7 @@ connectors:
   </section>
 
   <footer>
-    <span>plugboard is MIT licensed. Not affiliated with Anthropic.</span>
+    <span>Plugboard is MIT licensed. Not affiliated with Anthropic.</span>
     <span><a href="https://github.com/aanduque/plugboard">GitHub</a> · <a href="https://github.com/aanduque/plugboard#readme">Docs</a> · <a href="https://github.com/aanduque/homebrew-tap">Homebrew tap</a></span>
   </footer>
 </div>

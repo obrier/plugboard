@@ -34,7 +34,7 @@ class Plugboard < Formula
 
   def caveats
     <<~EOS
-      plugboard drives Claude Code's internal control protocol: it needs Claude Code
+      Plugboard drives Claude Code's internal control protocol: it needs Claude Code
       installed and logged in (`claude /login`), and may break after a Claude Code update
       (`plugboard doctor` says so). It is not an official Anthropic tool.
 
