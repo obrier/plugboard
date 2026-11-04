@@ -183,6 +183,7 @@ test("batch: per-line results, 429 backoff, auth fail-fast, writes refused, bad 
   expect(out[0]).toMatchObject({ ok: true, result: { matches: [{ user: "jose" }, { user: "ana" }] } });
   expect(out[1]).toMatchObject({ ok: true }); // two 429s, then success
   expect(out[2]).toMatchObject({ ok: false, error: { code: "AUTH_REQUIRED" } }); // gmail needs-auth: no call made
+  expect(out[2].error.help?.join(" ")).toContain("Reconnect it"); // its hint kept, as on any other failed line
   expect(out[3]).toMatchObject({ ok: false, error: { code: "POLICY_DENIED" } });
   expect(out[4]).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
   expect(out[5]).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });

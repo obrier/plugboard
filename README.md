@@ -124,7 +124,7 @@ plugboard batch --as reader --concurrency 4 < calls.jsonl > results.jsonl
 {"id":"today","connector":"cal","tool":"list-events","args":{"calendarId":"primary","startTime":"today","endTime":"tomorrow"},"items":"events","select":"summary"}
 ```
 
-Each output line is `{"id","ok":true,"ms","result"}` or `{"id","ok":false,"error":{"code","message","retryable"}}`.
+Each output line is `{"id","ok":true,"ms","result"}` or `{"id","ok":false,"error":{"code","message","retryable","help"?}}`, `help` holding the failure's hints when it has any.
 - **Failures stay local:** a bad line fails on its own, without stopping the batch.
 - **Rate limits:** a 429 backs off and drops that connector to one call at a time.
 - **Auth failures:** one auth failure fails the rest of that connector's lines at once.

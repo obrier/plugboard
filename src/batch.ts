@@ -68,11 +68,11 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
   let broken = false;
   try {
     const names = [...new Set(tasks.map(t => t.p.manifest.connectorName))];
-    const blind = new Map<string, string>(); // connector name → reason: the rest of its lines fail fast
+    const blind = new Map<string, Failure>(); // connector name → its failure, hints kept: the rest of its lines fail fast
     try {
       const servers = await client.waitForServers(names);
       for (const t of tasks) if (!blind.has(t.p.manifest.connectorName)) {
-        try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error).message); }
+        try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error)); }
       }
     } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
@@ -88,7 +88,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
         for (let i = 0; i < queue.length && running < o.concurrency; i++) {
           const t = queue[i]!;
           const name = t.p.manifest.connectorName;
-          if (blind.has(name)) { queue.splice(i--, 1); done(t.index, { id: t.id, ok: false, error: { code: "AUTH_REQUIRED", message: blind.get(name)!, retryable: false } }); continue; }
+          if (blind.has(name)) { queue.splice(i--, 1); done(t.index, { id: t.id, ok: false, error: { ...blind.get(name)!, code: "AUTH_REQUIRED", retryable: false } }); continue; }
           if ((active.get(name) ?? 0) >= (caps.get(name) ?? o.perConnector)) continue;
           queue.splice(i--, 1);
           running++;
@@ -107,7 +107,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
           const e = errorOf(error);
           const name = t.p.manifest.connectorName;
           if (e.code === "BRIDGE_BROKEN") broken = true;
-          if (e.code === "AUTH_REQUIRED") blind.set(name, e.message);
+          if (e.code === "AUTH_REQUIRED") blind.set(name, e);
           const again = (e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2);
           if (again && !broken) {
             if (e.code === "RATE_LIMITED") {
