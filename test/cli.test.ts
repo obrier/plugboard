@@ -413,3 +413,13 @@ test("a doctor.json cut short (disk full, say) never breaks the home view", asyn
   expect(r.code).toBe(0);
   expect(r.stdout).toContain("connectors");
 });
+
+test("usage says so when its counts can't be saved, instead of claiming it saved them", async () => {
+  mkdirSync(join(root, "transcripts/p"), { recursive: true });
+  writeFileSync(join(root, "transcripts/p/s.jsonl"), "");
+  mkdirSync(join(root, "cache/usage.json/blocker"), { recursive: true }); // a folder where the file goes: the rename fails
+  const r = await run(["usage"], { env: { PLUGBOARD_TRANSCRIPTS: join(root, "transcripts") } });
+  expect(r.code).toBe(0);
+  expect(r.all).not.toContain("Saved to the cache");
+  expect(r.all).toContain("not saved");
+});

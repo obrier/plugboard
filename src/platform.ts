@@ -1,7 +1,7 @@
 // Everything that differs between macOS, Linux, WSL and Windows lives here.
 // Each function takes a context (platform, env, home, file checks) so tests can
 // exercise every platform from any machine; callers use the real one by default.
-import { existsSync, mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, posix, win32 } from "node:path";
 
@@ -13,8 +13,9 @@ export function saveRecord(path: string, write: () => void = () => {}): string |
 /** Plugboard's one JSON writer: to a temp file, then renamed, so a reader never sees half a file. */
 export function writeJson(path: string, value: unknown) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.tmp`, JSON.stringify(value));
-  renameSync(`${path}.tmp`, path);
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`; // unique: two writers never share one
+  try { writeFileSync(tmp, JSON.stringify(value)); renameSync(tmp, path); }
+  catch (error) { rmSync(tmp, { force: true }); throw error; }
 }
 export const saveJson = (path: string, value: unknown) => saveRecord(path, () => writeJson(path, value));
 
