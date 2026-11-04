@@ -176,7 +176,7 @@ describe("claiming a key: the audit log decides", () => {
     const outs = await Promise.all(procs.map(p => new Response(p.stdout).text()));
     expect(outs.map(o => o.trim()).filter(o => o === "claimed")).toHaveLength(1);
     const entries = readAudit();
-    // late starters refuse in their pre-check without appending; every attempt appended but the winner's is withdrawn
+    // every process appends an attempt (the fixture claims with no pre-check); all but the winner's are withdrawn
     expect(entries.filter(e => e.status === "attempt").length - entries.filter(e => e.status === "withdrawn").length).toBe(1);
   }, 20_000);
 
@@ -243,6 +243,16 @@ describe("claims that lose to a rival", () => {
     expect(keyState("k").state).toBe("error");
     expect(unresolvedKeys()).toHaveLength(0);
     expect(claimKey("k", { key: "k", status: "attempt" }).claimed).toBe(true);
+  });
+  test("an attempt without seen that was withdrawn sent nothing: the key keeps its outcome", () => {
+    seed([
+      { key: "k", status: "attempt", nonce: "a" },
+      { key: "k", status: "error", message: "upstream 500" },
+      { key: "k", status: "attempt", nonce: "l" },
+      { key: "k", status: "withdrawn", nonce: "l" },
+    ]);
+    expect(keyState("k").state).toBe("error");
+    expect(unresolvedKeys()).toHaveLength(0);
   });
   test("an attempt from a log without seen counts as a claim when the key allowed a send", () => {
     seed([{ key: "k", status: "attempt" }]);

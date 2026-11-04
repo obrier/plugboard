@@ -31,17 +31,20 @@ export type KeyState = "none" | "ok" | "error" | "unknown";
  * the key allowed a send just before it (none, or a past error) and no other claim for the key landed in its
  * window: after the `seen` lines its writer had read before trying, and before the attempt itself. Every
  * other attempt lost and sent nothing, whether or not its writer lived to append its `withdrawn` line, so a
- * loser that crashed changes nothing. An attempt without `seen` (an older log) has an empty window. */
+ * loser that crashed changes nothing. An attempt without `seen` (an older log) has an empty window; one with a
+ * `withdrawn` line lost, whatever its window, since only a losing writer appends one. */
 function foldKey(key: string, entries: AuditEntry[]) {
   let state: KeyState = "none";
   let last: AuditEntry | undefined;
   let lastClaim = -1;
   const lost = new Set<AuditEntry>();
+  const withdrawn = new Set(entries.filter(e => e.key === key && e.status === "withdrawn").map(e => e.nonce));
   for (const [i, entry] of entries.entries()) {
     if (entry.key !== key || entry.status === "withdrawn") continue;
     if (entry.status === "attempt") {
       const seen = typeof entry.seen === "number" ? entry.seen : i;
-      if ((state !== "none" && state !== "error") || lastClaim >= seen) { lost.add(entry); continue; }
+      const out = entry.nonce !== undefined && withdrawn.has(entry.nonce); // only a loser withdraws
+      if (out || (state !== "none" && state !== "error") || lastClaim >= seen) { lost.add(entry); continue; }
       lastClaim = i;
       state = "unknown";
     } else if (entry.status === "unknown") state = "unknown";
