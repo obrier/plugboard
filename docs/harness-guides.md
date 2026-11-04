@@ -96,7 +96,7 @@ No instructions file. Gate on `doctor`, use `--out json`, and never put `--write
 set -euo pipefail
 plugboard doctor >/dev/null || exit $?          # 7 = some connectors blind, 10 = bridge broken
 
-plugboard slack search-public --keywords deploy --after -1d --out md
+plugboard slack search-public --keywords deploy --out md
 plugboard cal list-events --calendar-id primary --start-time today --end-time tomorrow \
   --items events --select summary,start.dateTime --out json | jq -r '.events[] | "\(.start.dateTime)  \(.summary)"'
 ```

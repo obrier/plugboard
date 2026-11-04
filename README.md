@@ -10,7 +10,7 @@ Your claude.ai connectors (Slack, Gmail, Calendar, Drive, Datadog, Sentry, Figma
 $ plugboard                              # connectors and their status, no network
 $ plugboard find "search logs"           # every tool, by name and description
 $ plugboard slack read-thread --help     # flags generated from the tool's schema
-$ plugboard slack search-public --keywords deploy --after -1d --out md
+$ plugboard slack search-public --keywords deploy --out md
 $ plugboard datadog search-datadog-logs --help
 ```
 
@@ -120,7 +120,7 @@ plugboard batch --as reader --concurrency 4 < calls.jsonl > results.jsonl
 ```
 
 ```json
-{"id":"mentions","connector":"slack","tool":"search-public","args":{"keywords":["deploy"],"after":"-1d"}}
+{"id":"mentions","connector":"slack","tool":"search-public","args":{"keywords":["deploy"]}}
 {"id":"today","connector":"cal","tool":"list-events","args":{"calendarId":"primary","startTime":"today","endTime":"tomorrow"},"items":"events","select":"summary"}
 ```
 
