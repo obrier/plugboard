@@ -8,7 +8,7 @@ import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveI
 import { BIN, invoke, prepare, profileName } from "./call";
 import { authStatus, claudePath, claudeVersion, connect, costGuard } from "./claude";
 import { AxiError } from "axi-sdk-js";
-import { EXIT } from "./errors";
+import { asAxiError, EXIT } from "./errors";
 import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, stateDir, windowsClaudeFromWSL } from "./platform";
 import { classify, DEFAULT_ALIASES, loadPolicy, matches, probeTools, profileFor, type Policy, type Profile } from "./policy";
 
@@ -51,6 +51,13 @@ export async function doctor(argv: string[]) {
   const add = (check: string, status: Status, detail: string, remedy?: string) => {
     checks.push({ check, status, detail });
     if (remedy && status !== "ok" && status !== "info") help.push(remedy);
+  };
+
+  // A protocol failure, explained as asAxiError does (a sandbox, say); otherwise the remedy for a breaking update.
+  const protocolFail = (prefix: string, error: unknown) => {
+    const e = asAxiError(error);
+    const remedy = e.suggestions.find(h => !h.includes("plugboard doctor") && !h.includes("breaking update"));
+    add("protocol", "fail", prefix + e.message, remedy ?? "Pin claude_path to the last good version, or wait for a bridge fix");
   };
 
   // 0: platform, and plugboard's own directories (WSL: not on the Windows drive)
@@ -111,7 +118,7 @@ export async function doctor(argv: string[]) {
         add("protocol", unknown.length ? "warn" : "ok", `initialize + mcp_status ok in ${(readyMs / 1000).toFixed(1)}s${unknown.length ? `; new message types: ${unknown.join(", ")}` : ""}`);
       } catch (error) {
         broken = true;
-        add("protocol", "fail", `mcp_status: ${(error as Error).message}`, "Pin claude_path to the last good version, or wait for a bridge fix");
+        protocolFail("mcp_status: ", error);
       }
       // 6: connectors
       for (const server of servers) {
@@ -182,7 +189,7 @@ export async function doctor(argv: string[]) {
       } catch (error) { broken = true; add("zero-cost", "fail", (error as Error).message, "Stop: a model was reached. Investigate before using the bridge again"); }
     } catch (error) {
       broken = true;
-      add("protocol", "fail", (error as Error).message, "Pin claude_path to the last good version, or wait for a bridge fix");
+      protocolFail("", error);
     } finally { await client?.close(); }
   }
 

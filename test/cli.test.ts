@@ -395,3 +395,12 @@ describe("batch --axi and full results on disk", () => {
     expect((await run(["slack", "search-public", "--query", long, "--axi", "--full"])).stdout).not.toContain("full result:");
   });
 });
+
+test("a Claude Code it isn't allowed to start is explained as a permission problem, not a breaking update", async () => {
+  const blocked = join(root, "claude-not-executable");
+  writeFileSync(blocked, "#!/bin/sh\n");
+  const r = await run(["slack", "search-public", "--query", "x"], { env: { PLUGBOARD_CLAUDE: blocked } });
+  expect(r.code).toBe(10);
+  expect(r.stderr).toContain("sandbox");
+  expect(r.stderr).not.toContain("breaking update");
+});

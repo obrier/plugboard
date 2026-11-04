@@ -3,7 +3,7 @@ import { encode } from "@toon-format/toon";
 import { AxiError } from "axi-sdk-js";
 import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
-import { EXIT, fail, retryAfterMs, type Code } from "./errors";
+import { asAxiError, EXIT, fail, retryAfterMs, type Code } from "./errors";
 import { invoke, parseDeadline, prepare, profileName, requireConnected, requireManifest, requireTool, type Prepared } from "./call";
 import { fileOf, itemCount, parseList, shape, unwrap } from "./output";
 import { newRun, writePrivate } from "./results";
@@ -13,10 +13,7 @@ type Line = { id?: unknown; connector?: unknown; tool?: unknown; args?: unknown;
 type Task = { id: unknown; index: number; p: Prepared; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
 export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: { code: Code; message: string; retryable: boolean; attempts?: number } };
 
-const errorOf = (error: unknown) => ({
-  code: (error instanceof AxiError ? error.code : "UPSTREAM_ERROR") as Code,
-  message: error instanceof Error ? error.message : String(error),
-});
+const errorOf = (error: unknown) => { const e = asAxiError(error, "UPSTREAM_ERROR"); return { code: e.code as Code, message: e.message }; };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export type BatchOptions = { profile: string; concurrency: number; perConnector: number; ordered: boolean; budgetMs: number };

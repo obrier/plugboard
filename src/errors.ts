@@ -1,4 +1,5 @@
 import { AxiError } from "axi-sdk-js";
+import { DiscoveryTimeoutError } from "./bridge/client";
 
 export const EXIT = {
   OK: 0, UPSTREAM_ERROR: 1, TIMEOUT: 1, UNKNOWN: 1, VALIDATION_ERROR: 2, NOT_FOUND: 2,
@@ -20,6 +21,25 @@ const TABLE: [Code, RegExp][] = [
 
 export function classify(message: string): Code {
   return TABLE.find(([, pattern]) => pattern.test(message))?.[0] ?? "UPSTREAM_ERROR";
+}
+
+// An agent's sandbox (Codex's, for one) blocks writes outside its workspace and the network by default.
+const PERMISSION = /\b(EPERM|EACCES)\b|operation not permitted|permission denied/i;
+export const SANDBOX_HINT = "If an agent's sandbox runs this (Codex, for one), allow network access and writes to the temp folder and plugboard's state folder: see docs/harness-guides.md";
+export const isPermissionError = (message: string) => PERMISSION.test(message);
+
+/** Every error as plugboard reports it, with a code and hints. The one place unknown errors get explained:
+ * the CLI, batch and doctor all go through it. */
+export function asAxiError(error: unknown, fallback: Code = "UNKNOWN"): AxiError {
+  if (error instanceof AxiError) return error;
+  if (error instanceof DiscoveryTimeoutError) {
+    const pending = error.servers.filter(s => s.status === "pending").map(s => s.name);
+    return error.servers.length
+      ? fail("BRIDGE_BROKEN", `Timed out waiting for connector discovery; still pending: ${pending.join(", ") || "none"}`, ["Run `plugboard doctor` for details"])
+      : fail("BRIDGE_BROKEN", "Claude Code listed no connectors in time: it can't reach claude.ai, or isn't logged in", [SANDBOX_HINT, "Run `plugboard doctor` for details"]);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return fail(fallback, message, isPermissionError(message) ? [SANDBOX_HINT] : []);
 }
 
 export const retryable = (code: Code) => code === "RATE_LIMITED" || code === "TIMEOUT";

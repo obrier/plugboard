@@ -3,7 +3,8 @@ import { AxiError } from "axi-sdk-js";
 import { keyState } from "../src/audit";
 import { mergeCapture, shortName, findTool, type Manifest } from "../src/cache";
 import { applyTransforms, canonical, payloadHash, refOf, timeParams } from "../src/call";
-import { classify as classifyError } from "../src/errors";
+import { asAxiError, classify as classifyError } from "../src/errors";
+import { DiscoveryTimeoutError } from "../src/bridge/client";
 import { mergeArgs, parseFlags, toolHelp } from "../src/flags";
 import { fileOf, markdownOf, render, shape, unwrap } from "../src/output";
 import { axiSummary } from "../src/batch";
@@ -271,6 +272,18 @@ describe("output", () => {
 });
 
 describe("errors, time, cache", () => {
+  test("a blocked sandbox reads as what it is, not a broken bridge or an unknown error", () => {
+    const none = asAxiError(new DiscoveryTimeoutError([]));
+    expect(none.code).toBe("BRIDGE_BROKEN");
+    expect(none.message).toContain("listed no connectors");
+    expect(none.suggestions.join(" ")).toContain("sandbox");
+    const pending = asAxiError(new DiscoveryTimeoutError([{ name: "claude.ai Slack", status: "pending", tools: [] }]));
+    expect(pending.message).toContain("claude.ai Slack");
+    const perm = asAxiError(Object.assign(new Error("EPERM: operation not permitted, open '/x/doctor.json'"), { code: "EPERM" }));
+    expect(perm.suggestions.join(" ")).toContain("sandbox");
+    expect(asAxiError(new Error("boom")).code).toBe("UNKNOWN");
+    expect(asAxiError(new Error("boom"), "UPSTREAM_ERROR").code).toBe("UPSTREAM_ERROR");
+  });
   test("error classification table", () => {
     expect(classifyError("invalid_auth")).toBe("AUTH_REQUIRED");
     expect(classifyError("Connector needs authentication")).toBe("AUTH_REQUIRED");
