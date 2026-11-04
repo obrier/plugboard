@@ -2,7 +2,7 @@
 
 **Auth once. Plug into any agent.**
 
-[![CI](https://img.shields.io/github/actions/workflow/status/aanduque/plugboard/ci.yml?branch=main&label=ci)](https://github.com/aanduque/plugboard/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/aanduque/plugboard?sort=semver)](https://github.com/aanduque/plugboard/releases) [![Homebrew](https://img.shields.io/badge/brew-aanduque%2Ftap%2Fplugboard-orange)](https://github.com/aanduque/homebrew-tap) [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey)](#platforms) [![License: MIT](https://img.shields.io/github/license/aanduque/plugboard)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/obrier/plugboard/ci.yml?branch=main&label=ci)](https://github.com/obrier/plugboard/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/obrier/plugboard?sort=semver)](https://github.com/obrier/plugboard/releases) [![Homebrew](https://img.shields.io/badge/brew-obrier%2Ftap%2Fplugboard-orange)](https://github.com/obrier/homebrew-tap) [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey)](#platforms) [![License: MIT](https://img.shields.io/github/license/obrier/plugboard)](LICENSE)
 
 Your claude.ai connectors (Slack, Gmail, Calendar, Drive, Datadog, Sentry, Figma, your org's custom ones) as shell commands. Any agent that can run a shell gets them: Codex, Gemini CLI, pi, Hermes, OpenCode, or a cron job. It reuses the Claude Code login you already have. No new OAuth, no API keys, no tokens held by a third party, and zero model tokens per call. Read-only by default; writes need a plan, a hash and a human.
 
@@ -56,7 +56,7 @@ It keeps its files in the XDG locations, `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME` a
 ## Install
 
 ```bash
-brew install aanduque/tap/plugboard
+brew install obrier/tap/plugboard
 ```
 
 Then capture your connectors' tool schemas and check that everything works:
@@ -319,7 +319,7 @@ plugboard refresh && LIVE=1 bun test test/live.test.ts  # read-only calls agains
 bun run typecheck && bun run link    # builds dist/plugboard and links it on your PATH
 ```
 
-Releases: `scripts/release.sh` builds the standalone binaries for macOS and Linux and renders the Homebrew formula for [aanduque/homebrew-tap](https://github.com/aanduque/homebrew-tap). Plugboard is distributed only through Homebrew.
+Releases: `scripts/release.sh` builds the standalone binaries for macOS and Linux and renders the Homebrew formula for [obrier/homebrew-tap](https://github.com/obrier/homebrew-tap). Plugboard is distributed only through Homebrew.
 
 ## License
 

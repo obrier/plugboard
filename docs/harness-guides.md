@@ -3,7 +3,7 @@
 One instruction block works for every harness. What changes is the file it goes in. Install first:
 
 ```bash
-brew install aanduque/tap/plugboard
+brew install obrier/tap/plugboard
 plugboard refresh    # capture tool schemas (~4 s)
 plugboard doctor     # login, bridge, connectors, zero cost
 ```

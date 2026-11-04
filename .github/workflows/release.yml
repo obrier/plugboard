@@ -1,5 +1,5 @@
 # Push a vX.Y.Z tag (npm version patch && git push --follow-tags) to release:
-# test → build the four binaries → GitHub release → formula pushed to aanduque/homebrew-tap.
+# test → build the four binaries → GitHub release → formula pushed to obrier/homebrew-tap.
 # Run it by hand (workflow_dispatch) for a dry run: it builds and uploads the archives as a
 # workflow artifact, and publishes nothing.
 name: release
@@ -43,14 +43,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" release/*/*.tar.gz --title "$GITHUB_REF_NAME" --generate-notes
 
-      - name: Push the formula to aanduque/homebrew-tap
+      - name: Push the formula to obrier/homebrew-tap
         if: github.ref_type == 'tag'
         env:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }} # deploy key with write access to the tap only
         run: |
           mkdir -p ~/.ssh && printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap && chmod 600 ~/.ssh/tap
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
-          git clone git@github.com:aanduque/homebrew-tap.git tap
+          git clone git@github.com:obrier/homebrew-tap.git tap
           mkdir -p tap/Formula && cp release/*/plugboard.rb tap/Formula/plugboard.rb
           cd tap
           git config user.name "plugboard release" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
