@@ -1,5 +1,7 @@
+import { encode } from "@toon-format/toon";
 import { compileExpression } from "filtrex";
 import { fail } from "./errors";
+import { newRun, writePrivate } from "./results";
 
 const tryJson = (text: string): unknown => { try { return JSON.parse(text); } catch { return undefined; } };
 
@@ -118,6 +120,37 @@ export function truncate(value: unknown, limit = 1500): { value: unknown; cut: n
   return { value: walk(value), cut };
 }
 
+/** A result as a file, keeping every key. Text (Slack's markdown, Sentry's and Datadog's text) stays text, not
+ * one escaped string, because Claude Code's Read cuts lines over 2,000 chars: a string, or an object of strings with
+ * exactly one multi-line field, written after the other fields as `key: value` lines. Anything else is TOON. */
+export function fileOf(value: unknown): { ext: string; text: string } {
+  if (typeof value === "string") return { ext: "md", text: value };
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const entries = Object.entries(value);
+    const long = entries.filter(([, v]) => typeof v === "string" && v.includes("\n"));
+    if (long.length === 1 && entries.every(([, v]) => typeof v === "string" && !(v.includes("\n") && v !== long[0]![1]))) {
+      const header = entries.filter(([k]) => k !== long[0]![0]).map(([k, v]) => `${k}: ${v}`);
+      return { ext: "md", text: [...(header.length ? [header.join("\n")] : []), long[0]![1] as string].join("\n\n") };
+    }
+  }
+  return { ext: "toon", text: encode(value) };
+}
+/** Best effort: a result that can't be written (disk full, no folder) must not fail a call that succeeded. */
+function spill(value: unknown): string | undefined {
+  try {
+    const { ext, text } = fileOf(value);
+    return writePrivate(newRun("r"), `result.${ext}`, text);
+  } catch { return undefined; }
+}
+
+/** The length of a result's one obvious list (as --where finds it), if it has one. */
+export function itemCount(value: unknown): number | undefined {
+  try {
+    const at = locate(value);
+    return at === undefined ? undefined : (at === null ? (value as unknown[]) : getPath(value, at)).length;
+  } catch { return undefined; }
+}
+
 /** --out md: a string result, or an object holding one string (Slack's {"results": "# …"}). */
 export function markdownOf(value: unknown): string | undefined {
   if (typeof value === "string") return value;
@@ -168,7 +201,9 @@ export function render(o: { raw: unknown; value: unknown; format: string; full: 
     return o.header ? `${plainText(o.header)}\n${body}` : body;
   }
   const { value, cut } = o.full ? { value: o.value, cut: 0 } : truncate(o.value);
-  const help = cut ? [`${cut} long string(s) cut at 1500 chars: add --full`] : [];
+  // Nothing is lost: the full result goes to a private file the hint names.
+  const file = cut ? spill(o.value) : undefined;
+  const help = cut ? [`${cut} long string(s) cut at 1500 chars${file ? `; full result: ${file} (or add --full)` : ": add --full"}`] : [];
   if (o.format === "md") {
     const md = markdownOf(value);
     if (md !== undefined) return md + (help.length ? `\n\n(${help[0]})` : "");

@@ -1,7 +1,7 @@
 // End-to-end through the real CLI, against test/fixtures/fake-claude.ts. No network, no account:
 // every "write" here lands in the fake's calls.jsonl, never in a real connector.
-import { afterAll, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mergeCapture } from "../src/cache";
@@ -330,4 +330,68 @@ test("doctor: a connector it can't probe gets a line saying so, not silence", as
   expect(checks.find(c => c.check === "read:slack")).toMatchObject({ status: "info", detail: expect.stringContaining("not checked") });
   expect(checks.find(c => c.check === "read:gmail")?.status).toBe("ok");
   expect(r.code).toBe(0); // info never changes the exit code
+});
+
+describe("batch --axi and full results on disk", () => {
+  const results = () => join(root, "state", "results");
+  const runDirOf = (stdout: string) => /^run: (.+)$/m.exec(stdout)?.[1] ?? "";
+  const mode = (path: string) => (statSync(path).mode & 0o777).toString(8);
+  const lines = (...ls: object[]) => ls.map(l => JSON.stringify(l)).join("\n");
+
+  test("writes every result to a private file and prints a manifest in input order, small results inline", async () => {
+    const big = "y".repeat(40_000);
+    const r = await run(["batch", "--as", "gather", "--axi"], { stdin: lines(
+      { id: "a", connector: "slack", tool: "search-public", args: { query: "one" } },
+      { id: "big", connector: "slack", tool: "search-public", args: { query: big } },
+      { id: "w", connector: "slack", tool: "send-message", args: { channel_id: "D1", message: "x" } },
+      { id: "s", connector: "slack", tool: "search-public", args: { query: "two" }, items: "matches", select: "user" },
+    ) });
+    expect(r.code).toBe(7);
+    const dir = runDirOf(r.stdout);
+    expect(dir.startsWith(results())).toBe(true);
+    expect(mode(dir)).toBe("700");
+    expect(r.stdout).toContain("results[4]{id,ok,ms,items,tokens,file}:");
+    expect(r.stdout.indexOf("\n  a,true")).toBeLessThan(r.stdout.indexOf("\n  big,true"));
+    expect(r.stdout).toMatch(/\n {2}big,true,\d+,2,~\d+K,big\.toon/);
+    expect(r.stdout).toMatch(/\n {2}w,false,null,null,null,null\n/);
+    expect(r.stdout).toContain("POLICY_DENIED");
+    expect(readdirSync(dir).sort()).toEqual(["a.toon", "big.toon", "s.toon"]);
+    for (const f of readdirSync(dir)) expect(mode(join(dir, f))).toBe("600");
+    expect(readFileSync(join(dir, "big.toon"), "utf8")).toContain(big); // nothing cut
+    expect(readFileSync(join(dir, "s.toon"), "utf8")).not.toContain("jose,1"); // select applied before writing
+    expect(r.stdout).toContain("inline:");
+    expect(r.stdout).not.toContain(big); // over the budget: in its file only
+    expect(r.stdout).toMatch(/1 result\(s\) not inlined \(~\d+K tokens\)/);
+  }, 20_000);
+
+  test("--inline picks what goes inline; without the --axi flag, PLUGBOARD_AXI=1 still gets JSON lines", async () => {
+    const input = lines({ id: "a", connector: "slack", tool: "search-public", args: { query: "one" } }, { id: "b", connector: "slack", tool: "search-public", args: { query: "two" } });
+    const none = await run(["batch", "--as", "gather", "--axi", "--inline", "none"], { stdin: input });
+    expect(none.stdout).not.toContain("inline:");
+    const one = await run(["batch", "--as", "gather", "--axi", "--inline", "b"], { stdin: input });
+    expect(one.stdout).toContain("Results for two");
+    expect(one.stdout).not.toContain("Results for one");
+    const jsonl = await run(["batch", "--as", "gather"], { stdin: input, env: { PLUGBOARD_AXI: "1" } });
+    expect(jsonl.stdout.trim().split("\n").map(l => JSON.parse(l).id).sort()).toEqual(["a", "b"]);
+    expect((await run(["batch", "--as", "gather", "--inline", "none"], { stdin: input })).code).not.toBe(0);
+  }, 20_000);
+
+  test("runs older than a day are removed by the next run", async () => {
+    const old = join(results(), "b-old");
+    mkdirSync(old, { recursive: true });
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000);
+    utimesSync(old, twoDaysAgo, twoDaysAgo);
+    await run(["batch", "--as", "gather", "--axi"], { stdin: lines({ id: "a", connector: "slack", tool: "search-public", args: { query: "one" } }) });
+    expect(existsSync(old)).toBe(false);
+  }, 20_000);
+
+  test("a single call cut at 1500 chars writes its full result and names the file", async () => {
+    const long = "z".repeat(3000);
+    const r = await run(["slack", "search-public", "--query", long, "--axi"]);
+    const path = /full result: (\S+)/.exec(r.stdout)?.[1] ?? "";
+    expect(path.startsWith(results())).toBe(true);
+    expect(mode(path)).toBe("600");
+    expect(readFileSync(path, "utf8")).toContain(long);
+    expect((await run(["slack", "search-public", "--query", long, "--axi", "--full"])).stdout).not.toContain("full result:");
+  });
 });

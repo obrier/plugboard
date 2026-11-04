@@ -5,12 +5,14 @@ import { mergeCapture, shortName, findTool, type Manifest } from "../src/cache";
 import { applyTransforms, canonical, payloadHash, refOf, timeParams } from "../src/call";
 import { classify as classifyError } from "../src/errors";
 import { mergeArgs, parseFlags, toolHelp } from "../src/flags";
-import { markdownOf, render, shape, unwrap } from "../src/output";
+import { fileOf, markdownOf, render, shape, unwrap } from "../src/output";
+import { axiSummary } from "../src/batch";
+import { encode } from "@toon-format/toon";
 import { classify, decide, parsePolicy } from "../src/policy";
 import { formatTime, parseTime } from "../src/time";
 import { setupCommand } from "../src/cli";
 import { probe } from "../src/doctor";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -253,7 +255,16 @@ describe("output", () => {
   test("md prints Slack's string fields; toon cuts long strings unless --full; json never does", () => {
     expect(markdownOf({ results: "# r", pagination_info: "next" })).toBe("# r\n\nnext");
     const long = "x".repeat(2000);
-    expect(JSON.stringify(render({ raw: {}, value: { long }, format: "toon", full: false }))).toContain("cut at 1500");
+    const state = process.env.PLUGBOARD_STATE;
+    process.env.PLUGBOARD_STATE = mkdtempSync(join(tmpdir(), "plugboard-render-")); // the cut result is written there
+    try {
+      const out = JSON.stringify(render({ raw: {}, value: { long }, format: "toon", full: false }));
+      expect(out).toContain("cut at 1500");
+      expect(readFileSync(/full result: ([^ ]+)/.exec(out)![1]!, "utf8")).toContain(long);
+    } finally {
+      rmSync(process.env.PLUGBOARD_STATE, { recursive: true, force: true });
+      if (state === undefined) delete process.env.PLUGBOARD_STATE; else process.env.PLUGBOARD_STATE = state;
+    }
     expect(render({ raw: {}, value: { long }, format: "json", full: false })).toBe(JSON.stringify({ long }));
     expect(render({ raw: { content: "r" }, value: {}, format: "raw", full: false })).toBe('{"content":"r"}');
   });
@@ -320,4 +331,67 @@ test("plain text renderer: key lines, aligned tables, hints last", () => {
   expect(plainText({ profile: "gather", allow: ["a:*", "b:c"], tools: [{ name: "x", class: "read" }, { name: "longer", class: "write" }], help: ["do this"] }))
     .toBe("profile: gather\nallow: a:*, b:c\ntools:\n  NAME    CLASS\n  x       read\n  longer  write\nhint: do this");
   expect(plainText({ empty: [], nested: { a: 1 } })).toBe("empty: -\nnested:\n  a: 1");
+});
+
+describe("full results on disk", () => {
+  const withState = <T>(fn: (state: string) => T): T => {
+    const saved = process.env.PLUGBOARD_STATE;
+    const state = mkdtempSync(join(tmpdir(), "plugboard-results-"));
+    process.env.PLUGBOARD_STATE = state;
+    try { return fn(state); } finally {
+      rmSync(state, { recursive: true, force: true });
+      if (saved === undefined) delete process.env.PLUGBOARD_STATE; else process.env.PLUGBOARD_STATE = saved;
+    }
+  };
+  const ok = (id: unknown, result: unknown) => ({ id, ok: true, ms: 1, result });
+
+  test("fileOf keeps every key: text stays text only when nothing else would be lost", () => {
+    expect(fileOf("a\nb")).toEqual({ ext: "md", text: "a\nb" });
+    expect(fileOf({ text: "a\nb" })).toEqual({ ext: "md", text: "a\nb" });
+    expect(fileOf({ results: "# r\nx", pagination_info: "next" })).toEqual({ ext: "md", text: "pagination_info: next\n\n# r\nx" });
+    const mail = fileOf({ id: "m1", from: "bob@x", subject: "hi", body: "line1\nline2" });
+    for (const k of ["id: m1", "from: bob@x", "subject: hi", "line1\nline2"]) expect(mail.text).toContain(k);
+    expect(fileOf({ id: "m1", from: "bob@x" }).ext).toBe("toon");
+  });
+
+  test("every result gets its own file, whatever the ids", () => withState(() => {
+    const ids = ["A", "a", "x", "a-b-3", "a-b", "a b", "__proto__", "con", "lpt1.log", "../up", "a-2.toon", "a"];
+    const s = axiSummary(ids.map((id, i) => ok(id, { v: i })), "all");
+    const files = s.results.map(r => r.file as string);
+    expect(new Set(files.map(f => f.toLowerCase())).size).toBe(ids.length);
+    expect(readdirSync(s.run)).toHaveLength(ids.length);
+    files.forEach((f, i) => expect(readFileSync(join(s.run, f), "utf8")).toContain(`v: ${i}`));
+    expect(files).not.toContain("con.toon");
+    expect(files).not.toContain("lpt1.log.toon"); // reserved whatever the extension
+    expect(Object.keys(s.inline!)).toHaveLength(ids.length); // __proto__ included
+  }));
+
+  test("the printed output stays within the budget, manifest included", () => withState(() => {
+    const quoted = { text: 'say "x"\n'.repeat(450) }; // ~3.6K chars on disk, more once escaped inline
+    const s = axiSummary(Array.from({ length: 8 }, (_, i) => ok(`r${i}`, quoted)));
+    expect(encode(s).length).toBeLessThanOrEqual(15_000 + 2_000); // the budget, plus help lines
+  }));
+
+  test("a cost-guard failure is its own field, not a result row", () => withState(() => {
+    const s = axiSummary([ok("a", { v: 1 }), { id: null, ok: false, error: { code: "COST_GUARD", message: "spent $0.01", retryable: false } }] as never);
+    expect(s.results).toHaveLength(1);
+    expect(s.error).toEqual({ code: "COST_GUARD", message: "spent $0.01" });
+  }));
+
+  test("when results can't be written, nothing is lost: batch inlines them and a cut call keeps the --full hint", () => {
+    const saved = process.env.PLUGBOARD_STATE;
+    const file = join(mkdtempSync(join(tmpdir(), "plugboard-nodir-")), "a-file");
+    writeFileSync(file, "");
+    process.env.PLUGBOARD_STATE = file; // a file, so no folder can be made under it
+    try {
+      const s = axiSummary([ok("big", { t: "z".repeat(40_000) })]);
+      expect(s.results[0]!.file).toBeNull();
+      expect(JSON.stringify(s.inline)).toContain("z".repeat(40_000));
+      expect(s.help.join(" ")).toContain("not written");
+      const out = JSON.stringify(render({ raw: {}, value: { long: "x".repeat(2000) }, format: "toon", full: false }));
+      expect(out).toContain("add --full");
+    } finally {
+      if (saved === undefined) delete process.env.PLUGBOARD_STATE; else process.env.PLUGBOARD_STATE = saved;
+    }
+  });
 });

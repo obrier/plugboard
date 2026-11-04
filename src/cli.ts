@@ -22,7 +22,7 @@ commands[10]:
   <connector>          List a connector's tools with their class (read | write)
   <connector> <tool>   Call a tool; --help shows its flags, generated from its schema
   find <words>         Search all cached tools by name and description
-  batch                JSONL calls on stdin → JSONL results on stdout (reads only)
+  batch                JSONL calls on stdin → JSONL results on stdout (reads only); --axi: results in files and a manifest
   doctor               Preflight gate: login, protocol, connectors, drift, zero cost (exit 0 | 7 | 10)
   refresh [id…]        Recapture tool schemas into the cache (~4 s)
   policy [--as p]      What a profile may call
@@ -42,9 +42,10 @@ exit codes: 0 ok · 1 error · 2 usage · 3 policy · 4 auth · 5 rate limited �
 
 const COMMAND_HELP: Record<string, string> = {
   find: `usage: ${BIN} find <words…> [--limit 15]\n  Searches tool names and descriptions in the cache (no spawn).\nexamples:\n  ${BIN} find rollout version tag\n`,
-  batch: `usage: ${BIN} batch [--as <profile>] [--concurrency 4] [--ordered] [--budget 5m] < calls.jsonl > results.jsonl
+  batch: `usage: ${BIN} batch [--as <profile>] [--concurrency 4] [--ordered] [--budget 5m] [--axi [--inline none|all|id,id]] < calls.jsonl > results.jsonl
   Each input line: {"id":"x","connector":"slack","tool":"slack_read_thread","args":{…},"select":"a,b","where":"expr","items":"path","deadline":"30s"}
   Each output line: {"id":"x","ok":true,"ms":742,"result":…} or {"id":"x","ok":false,"error":{"code","message","retryable","attempts"}}
+  --axi (the flag only, not PLUGBOARD_AXI): every result in full in its own private file, a manifest in input order (id, ok, ms, items, ~tokens, file), and small results inline up to about 15,000 chars; --inline picks them.
   Reads only. 429s back off (1 s, 4 s) and drop that connector to 1 at a time; auth failures fail the rest of that connector fast.
   Exit: 0 all ok · 7 some lines failed · 10 bridge broken or cost guard
 `,
@@ -194,12 +195,14 @@ const plain = (command: Command): Command => async args => {
 async function main() {
   // --axi may appear anywhere; it only switches the output, so it is removed before dispatch.
   const argv = process.argv.slice(2).filter(arg => arg !== "--axi");
-  if (argv.length !== process.argv.length - 2) mode.axi = true;
+  const axiFlag = argv.length !== process.argv.length - 2;
+  if (axiFlag) mode.axi = true;
   const out = explicitOut(argv);
   errorsOnStdout = mode.axi && (out === undefined || out === "toon");
-  // batch streams JSONL: it owns stdout, so it runs outside runAxiCli's renderer.
+  // batch owns stdout, so it runs outside runAxiCli's renderer. Only the --axi flag switches it from JSONL to
+  // its manifest: PLUGBOARD_AXI=1 must not break `batch | jq` pipelines.
   if (argv[0] === "batch" && !argv.includes("--help")) {
-    try { process.exitCode = await batchCommand(argv.slice(1)); } catch (error) { process.exitCode = reportError(error); }
+    try { process.exitCode = await batchCommand(argv.slice(1), axiFlag); } catch (error) { process.exitCode = reportError(error); }
     return;
   }
   // Plain home view: runAxiCli would prefix it with the AXI header.
