@@ -339,13 +339,14 @@ describe("full results on disk", () => {
   });
 
   test("every result gets its own file, whatever the ids", () => withState(() => {
-    const ids = ["A", "a", "x", "a-b-3", "a-b", "a b", "__proto__", "con", "../up"];
+    const ids = ["A", "a", "x", "a-b-3", "a-b", "a b", "__proto__", "con", "lpt1.log", "../up", "a-2.toon", "a"];
     const s = axiSummary(ids.map((id, i) => ok(id, { v: i })), "all");
     const files = s.results.map(r => r.file as string);
     expect(new Set(files.map(f => f.toLowerCase())).size).toBe(ids.length);
     expect(readdirSync(s.run)).toHaveLength(ids.length);
     files.forEach((f, i) => expect(readFileSync(join(s.run, f), "utf8")).toContain(`v: ${i}`));
     expect(files).not.toContain("con.toon");
+    expect(files).not.toContain("lpt1.log.toon"); // reserved whatever the extension
     expect(Object.keys(s.inline!)).toHaveLength(ids.length); // __proto__ included
   }));
 

@@ -140,7 +140,7 @@ function tokens(chars: number) {
 /** A file name for an id: safe on every OS, unique even where names ignore case. */
 function fileName(id: unknown, ext: string, used: Set<string>) {
   let base = String(id).replace(/[^\w.-]+/g, "-").replace(/^[.-]+/, "").slice(0, 60) || "result";
-  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(base)) base = `_${base}`; // reserved on Windows
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(base.split(".")[0]!)) base = `_${base}`; // reserved on Windows, whatever the extension
   let name = `${base}.${ext}`;
   for (let n = 2; used.has(name.toLowerCase()); n++) name = `${base}-${n}.${ext}`;
   used.add(name.toLowerCase());
@@ -170,8 +170,9 @@ export function axiSummary(outs: Out[], inline?: string) {
   const keys = new Set<string>();
   let skipped = 0, skippedChars = 0;
   for (const r of rows) if (r.out.ok) {
-    const key = keys.has(r.row.id) ? r.row.file ?? `${r.row.id}-${keys.size}` : r.row.id;
-    const size = encode(Object.fromEntries([[key, r.out.result]])).length; // as printed: escapes and indentation count
+    let key = r.row.id;
+    for (let n = 2; keys.has(key); n++) key = `${r.row.id}-${n}`; // a repeated id: never overwrite another inline result
+    const size = encode({ inline: Object.fromEntries([[key, r.out.result]]) }).length - "inline:\n".length; // as printed, nested
     const take = r.row.file === null || (wanted ? wanted.has(r.row.id) : size <= budget);
     if (!take) { skipped++; skippedChars += size; continue; }
     if (!wanted && r.row.file !== null) budget -= size;
