@@ -104,7 +104,7 @@ Time parameters accept `today`, `yesterday`, `-2d`, `+7d`, `2026-11-03`, or `mon
 | `--out json` | Compact JSON, never truncated: for scripts |
 | `--out md` | The text fields of the result as markdown (Slack search results, for example) |
 | `--out raw` | The connector's response exactly as received |
-| `--axi` | [AXI](https://github.com/kunchenguid/axi) output for agents: TOON, `help[]` hints, structured errors. `PLUGBOARD_AXI=1` sets it for a whole session |
+| `--axi` | [AXI](https://github.com/kunchenguid/axi) output for agents: TOON, `help[]` hints, structured errors. On by default inside Claude Code; `PLUGBOARD_AXI=1` sets it for a whole session elsewhere, `PLUGBOARD_AXI=0` turns it off |
 
 Shape results without `jq`:
 - `--select a,b.c` keeps only those fields.
@@ -273,7 +273,7 @@ Rules:
 | `~/.local/state/plugboard/` | Audit log, last doctor result | `PLUGBOARD_STATE` |
 | `~/.local/bin/claude` | The Claude Code binary to drive | `PLUGBOARD_CLAUDE`, or `claude_path` in the policy |
 
-`PLUGBOARD_PROFILE` sets the default profile, and `PLUGBOARD_AXI=1` the AXI output.
+`PLUGBOARD_PROFILE` sets the default profile. `PLUGBOARD_AXI=1` turns on the AXI output, which is already on inside Claude Code; `PLUGBOARD_AXI=0` turns it off.
 
 ## How it works
 
