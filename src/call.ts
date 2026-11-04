@@ -11,7 +11,7 @@ import { loadUsage } from "./usage";
 import { classify, decide, loadPolicy, resolveConnector, type Policy, type ToolClass } from "./policy";
 import { formatTime, inFormat, parseTime } from "./time";
 
-import { BIN, callRead, callWrite, type OpenSession } from "./core";
+import { BIN, callRead, callWrite, planCall, type OpenSession } from "./core";
 export { BIN };
 
 // --- lookup ---------------------------------------------------------------------
@@ -132,20 +132,15 @@ export async function runTool(connectorRef: string, args: string[]) {
   if (!OUT_FORMATS.includes(format)) throw fail("VALIDATION_ERROR", `--out must be one of ${OUT_FORMATS.join(", ")}`);
   const write = g.write === true;
   const profile = profileName(g);
-  const merged = mergeArgs(parsed);
-  // Tools with their own idempotency_key (35 Datadog writes) get the --write-key, so the service also
-  // refuses a duplicate. Done before hashing: run --plan with the same --write-key to get the hash.
-  if (typeof g["write-key"] === "string" && "idempotency_key" in (tool.inputSchema.properties ?? {}) && merged.idempotency_key === undefined)
-    merged.idempotency_key = g["write-key"];
-  const p = prepare(policy, manifest, tool, merged, write);
+  // The raw request: the core resolves, validates and hashes it, and fills a tool's own idempotency_key from the key.
+  const request = { connector: manifest.id, tool: tool.name, args: mergeArgs(parsed) };
+  const key = typeof g["write-key"] === "string" ? g["write-key"] : undefined;
 
   if (g.plan) {
-    let decision = "allowed";
-    try { decide(policy, profile, manifest.id, tool, cls === "write"); } catch (error) { decision = `denied: ${(error as Error).message}`; }
-    const plan = { connector: manifest.id, tool: tool.name, class: cls, destructive: tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload: p.args };
-    return format === "json" ? JSON.stringify(plan) : { plan, ...(cls === "write" ? { help: [`Run with --as <write profile> --write --write-key <k> --expect-hash ${p.hash}`] } : {}) };
+    const plan = planCall(policy, profile, request, key);
+    return format === "json" ? JSON.stringify(plan) : { plan, ...(cls === "write" ? { help: [`Run with --as <write profile> --write --write-key <k> --expect-hash ${plan.hash}`] } : {}) };
   }
-  decide(policy, profile, manifest.id, tool, write);
+  decide(policy, profile, manifest.id, tool, write); // the flags make sense for this tool; the core decides again
   const deadline = parseDeadline(g.deadline);
   const shapeOpts = { select: parseList(g.select as string | undefined), where: g.where as string | undefined, items: g.items as string | undefined };
 
@@ -154,12 +149,11 @@ export async function runTool(connectorRef: string, args: string[]) {
   const open: OpenSession = async () => (client = await connect(policy));
   try {
     if (cls === "write") {
-      if (typeof g["write-key"] !== "string" || !g["write-key"]) throw fail("VALIDATION_ERROR", "--write needs --write-key <k>", ["A key that names this one write, such as reply-42"]);
-      const out = await callWrite(open, policy, p, { profile, key: g["write-key"], expectHash: String(g["expect-hash"] ?? ""), deadlineMs: deadline });
+      const out = await callWrite(open, policy, request, { profile, key: key ?? "", expectHash: String(g["expect-hash"] ?? ""), deadlineMs: deadline });
       if (out.replayed) return { ...out, help: ["Already sent under this key: nothing was called"] };
       return render({ raw: out.raw, value: shape(out.value, shapeOpts), format, full: g.full === true, header: { sent: true, key: out.key, ref: out.ref } });
     }
-    const out = await callRead(open, policy, profile, p, deadline);
+    const out = await callRead(open, policy, profile, request, deadline);
     return render({ raw: out.raw, value: shape(out.value, shapeOpts), format, full: g.full === true });
   } finally { await client?.close(); }
 }

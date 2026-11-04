@@ -1,104 +1,140 @@
-// The core holds every safeguard itself, so neither the CLI nor the library can skip one:
-// the policy decides before a session opens, and a write is refused, replayed or audited in the core.
+// The core holds every safeguard itself, so neither the CLI nor the library can skip one. It takes the raw
+// request (connector, tool, args) and resolves, validates and hashes it itself: there is nothing to forge.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAudit } from "../src/audit";
+import { runBatch } from "../src/batch";
 import type { Manifest } from "../src/cache";
-import { prepare } from "../src/call";
-import { callRead, callWrite, type Session } from "../src/core";
+import { callRead, callWrite, planCall, type Session } from "../src/core";
 import { parsePolicy } from "../src/policy";
+import { writeJson } from "../src/platform";
 
 const manifest: Manifest = { id: "slack", connectorName: "claude.ai Slack", capturedAt: "2026-11-04T00:00:00Z", tools: [
-  { name: "slack_search", sourceName: "mcp__claude_ai_Slack__slack_search", inputSchema: { type: "object", properties: { query: { type: "string" } } }, annotations: { readOnlyHint: true } },
-  { name: "slack_send", sourceName: "mcp__claude_ai_Slack__slack_send", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+  { name: "slack_search", sourceName: "mcp__claude_ai_Slack__slack_search", inputSchema: { type: "object", properties: { query: { type: "string" } }, additionalProperties: false }, annotations: { readOnlyHint: true } },
+  { name: "slack_send", sourceName: "mcp__claude_ai_Slack__slack_send", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"], additionalProperties: false } },
+  { name: "slack_delete", sourceName: "mcp__claude_ai_Slack__slack_delete", inputSchema: { type: "object", properties: {} }, annotations: { destructiveHint: true } },
 ] };
 const policy = parsePolicy(`[profiles.executor]\nmode = "write"\nallow = ["slack:*", "slack:slack_send"]\n[profiles.nosearch]\nmode = "read"\ndeny = ["slack:slack_search"]\n`, "/c/policy.toml");
-const [search, send] = manifest.tools as [Manifest["tools"][number], Manifest["tools"][number]];
+const search = { connector: "slack", tool: "slack_search", args: { query: "x" } };
+const send = { connector: "slack", tool: "slack_send", args: { text: "hi" } };
 
-/** A session that answers every call with { ts }, counts how often it was opened, and can fail. */
-function fakeSession(o: { fail?: Error; cost?: string } = {}) {
-  const calls: string[] = [];
-  let opened = 0;
+/** A session that answers every call with { ts }, records what was sent, counts opens and status checks. */
+function fakeSession(o: { fail?: Error; cost?: string; delayMs?: number } = {}) {
+  const sent: { tool: string; args: unknown }[] = [];
+  let opened = 0, statusChecks = 0;
   const session: Session = {
-    waitForServers: async () => [{ name: "claude.ai Slack", status: "connected", tools: [] }],
+    waitForServers: async () => { statusChecks++; return [{ name: "claude.ai Slack", status: "connected", tools: [] }]; },
     request: async (request: any) => {
       if (request.subtype === "get_session_cost") return { text: o.cost ?? "Total cost: $0.0000\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" } as any;
-      calls.push(request.tool);
+      sent.push({ tool: request.tool, args: request.arguments });
+      if (o.delayMs) await new Promise(r => setTimeout(r, o.delayMs));
       if (o.fail) throw o.fail;
       return { structuredContent: { ts: "1730.1" } } as any;
     },
   };
-  return { open: async () => { opened++; return session; }, calls, opened: () => opened };
+  return { open: async () => { opened++; return session; }, session, sent, opened: () => opened, statusChecks: () => statusChecks };
 }
 
-let state: string | undefined;
-let saved: string | undefined;
-let claudecode: string | undefined;
+const saved: Record<string, string | undefined> = {};
+let root = "";
 beforeEach(() => {
-  saved = process.env.PLUGBOARD_STATE; claudecode = process.env.CLAUDECODE;
-  state = process.env.PLUGBOARD_STATE = mkdtempSync(join(tmpdir(), "plugboard-core-"));
+  for (const k of ["PLUGBOARD_STATE", "PLUGBOARD_CACHE", "CLAUDECODE"]) saved[k] = process.env[k];
+  root = mkdtempSync(join(tmpdir(), "plugboard-core-"));
+  process.env.PLUGBOARD_STATE = join(root, "state");
+  process.env.PLUGBOARD_CACHE = join(root, "cache");
+  writeJson(join(root, "cache", "manifests", "slack.json"), manifest);
+  writeJson(join(root, "cache", "index.json"), { format: 1, testedVersions: [], connectors: { slack: { name: "claude.ai Slack", status: "connected", tools: 3, read: 1, write: 2 } } });
   delete process.env.CLAUDECODE;
 });
 afterEach(() => {
-  rmSync(state!, { recursive: true, force: true });
-  if (saved === undefined) delete process.env.PLUGBOARD_STATE; else process.env.PLUGBOARD_STATE = saved;
-  if (claudecode === undefined) delete process.env.CLAUDECODE; else process.env.CLAUDECODE = claudecode;
+  rmSync(root, { recursive: true, force: true });
+  for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
 });
 const codeOf = async (promise: Promise<unknown>) => promise.then(() => "OK", (e: { code?: string }) => e.code);
 
 describe("callRead", () => {
-  test("a read the profile allows: one call, then the cost guard", async () => {
+  test("sends exactly the cached tool, with the args it validated; then the cost guard", async () => {
     const s = fakeSession();
-    const out = await callRead(s.open, policy, "default", prepare(policy, manifest, search, { query: "x" }, false), 1_000);
+    const out = await callRead(s.open, policy, "default", search, 1_000);
     expect(out.value).toEqual({ ts: "1730.1" });
-    expect(s.calls).toEqual(["mcp__claude_ai_Slack__slack_search"]);
+    expect(s.sent).toEqual([{ tool: "mcp__claude_ai_Slack__slack_search", args: { query: "x" } }]);
   });
-  test("a profile that denies the tool refuses before a session opens", async () => {
+  test("refused before a session opens: a denied tool, a write tool, args the schema rejects, a tool not in the cache", async () => {
     const s = fakeSession();
-    expect(await codeOf(callRead(s.open, policy, "nosearch", prepare(policy, manifest, search, {}, false), 1_000))).toBe("POLICY_DENIED");
-    expect(s.opened()).toBe(0);
-  });
-  test("a write tool can't go through the read path", async () => {
-    const s = fakeSession();
-    expect(await codeOf(callRead(s.open, policy, "executor", prepare(policy, manifest, send, { text: "hi" }, false), 1_000))).toBe("POLICY_DENIED");
+    expect(await codeOf(callRead(s.open, policy, "nosearch", search, 1_000))).toBe("POLICY_DENIED");
+    expect(await codeOf(callRead(s.open, policy, "executor", send, 1_000))).toBe("POLICY_DENIED");
+    expect(await codeOf(callRead(s.open, policy, "default", { ...search, args: { query: 42, extra: true } }, 1_000))).toBe("VALIDATION_ERROR");
+    expect(await codeOf(callRead(s.open, policy, "default", { connector: "slack", tool: "slack_nuke", args: {} }, 1_000))).toBe("NOT_FOUND");
     expect(s.opened()).toBe(0);
   });
   test("a session that wasn't zero-cost fails the call", async () => {
-    const s = fakeSession({ cost: "Total cost: $0.0100" });
-    expect(await codeOf(callRead(s.open, policy, "default", prepare(policy, manifest, search, {}, false), 1_000))).toBe("COST_GUARD");
+    expect(await codeOf(callRead(fakeSession({ cost: "Total cost: $0.0100" }).open, policy, "default", search, 1_000))).toBe("COST_GUARD");
   });
 });
 
 describe("callWrite", () => {
-  const p = () => prepare(policy, manifest, send, { text: "hi" }, true);
+  const hash = () => planCall(policy, "executor", send).hash;
   const req = (o: Partial<{ key: string; expectHash: string; profile: string }> = {}) =>
-    ({ profile: o.profile ?? "executor", key: o.key ?? "k1", expectHash: o.expectHash ?? p().hash, deadlineMs: 1_000 });
+    ({ profile: o.profile ?? "executor", key: o.key ?? "k1", expectHash: o.expectHash ?? hash(), deadlineMs: 1_000 });
 
   test("sends once, audited; the same key again replays without a session", async () => {
     const s = fakeSession();
-    const first = await callWrite(s.open, policy, p(), req());
-    expect(first).toMatchObject({ replayed: false, key: "k1", ref: "1730.1" });
+    expect(await callWrite(s.open, policy, send, req())).toMatchObject({ replayed: false, key: "k1", ref: "1730.1" });
+    expect(s.sent).toEqual([{ tool: "mcp__claude_ai_Slack__slack_send", args: { text: "hi" } }]);
     expect(readAudit().map(e => e.status)).toEqual(["attempt", "ok"]);
     const again = fakeSession();
-    expect(await callWrite(again.open, policy, p(), req())).toMatchObject({ replayed: true, key: "k1", ref: "1730.1" });
+    expect(await callWrite(again.open, policy, send, req())).toMatchObject({ replayed: true, key: "k1", ref: "1730.1" });
     expect(again.opened()).toBe(0);
   });
-  test("a payload that isn't the approved one, a read profile, an agent session, or no key: refused before a session opens", async () => {
+  test("the approval binds the args: other args under the approved hash are refused, unsent", async () => {
     const s = fakeSession();
-    expect(await codeOf(callWrite(s.open, policy, p(), req({ expectHash: "sha256:00" })))).toBe("POLICY_DENIED");
-    expect(await codeOf(callWrite(s.open, policy, p(), req({ profile: "default" })))).toBe("POLICY_DENIED");
-    expect(await codeOf(callWrite(s.open, policy, p(), req({ key: "" })))).toBe("VALIDATION_ERROR");
-    process.env.CLAUDECODE = "1";
-    expect(await codeOf(callWrite(s.open, policy, p(), req()))).toBe("POLICY_DENIED");
+    expect(await codeOf(callWrite(s.open, policy, { ...send, args: { text: "WIRE ALL THE MONEY" } }, req()))).toBe("POLICY_DENIED");
     expect(s.opened()).toBe(0);
     expect(readAudit()).toEqual([]);
   });
+  test("refused before a session opens: a wrong hash, a read profile, no key, an agent session (first, even with no key)", async () => {
+    const s = fakeSession();
+    expect(await codeOf(callWrite(s.open, policy, send, req({ expectHash: "sha256:00" })))).toBe("POLICY_DENIED");
+    expect(await codeOf(callWrite(s.open, policy, send, req({ profile: "default" })))).toBe("POLICY_DENIED");
+    expect(await codeOf(callWrite(s.open, policy, send, req({ key: "" })))).toBe("VALIDATION_ERROR");
+    process.env.CLAUDECODE = "1";
+    expect(await codeOf(callWrite(s.open, policy, send, req({ key: "" })))).toBe("POLICY_DENIED");
+    expect(s.opened()).toBe(0);
+    expect(readAudit()).toEqual([]);
+  });
+  test("two writes under one key at once: one is sent, the other is refused", async () => {
+    const s = fakeSession({ delayMs: 50 });
+    const codes = await Promise.all([codeOf(callWrite(s.open, policy, send, req({ key: "pay-1" }))), codeOf(callWrite(s.open, policy, send, req({ key: "pay-1" })))]);
+    expect(s.sent).toHaveLength(1);
+    expect(codes.sort()).toEqual(["OK", "WRITE_OUTCOME_UNKNOWN"]);
+  });
+  test("a write the audit log can't record is never sent", async () => {
+    writeFileSync(join(root, "blocked"), "");
+    process.env.PLUGBOARD_STATE = join(root, "blocked"); // a file where the state folder goes
+    const s = fakeSession();
+    expect(await codeOf(callWrite(s.open, policy, send, req()))).not.toBe("OK");
+    expect(s.sent).toEqual([]);
+  });
   test("a timeout leaves the outcome unknown, and that key refuses until resolved", async () => {
-    const s = fakeSession({ fail: new Error("Timed out waiting for mcp_call") });
-    expect(await codeOf(callWrite(s.open, policy, p(), req({ key: "k2" })))).toBe("WRITE_OUTCOME_UNKNOWN");
-    expect(await codeOf(callWrite(fakeSession().open, policy, p(), req({ key: "k2" })))).toBe("WRITE_OUTCOME_UNKNOWN");
+    expect(await codeOf(callWrite(fakeSession({ fail: new Error("Timed out waiting for mcp_call") }).open, policy, send, req({ key: "k2" })))).toBe("WRITE_OUTCOME_UNKNOWN");
+    expect(await codeOf(callWrite(fakeSession().open, policy, send, req({ key: "k2" })))).toBe("WRITE_OUTCOME_UNKNOWN");
     expect(readAudit().map(e => e.status)).toEqual(["attempt", "unknown"]);
   });
+  test("a cost guard that fails after the send is audited", async () => {
+    expect(await codeOf(callWrite(fakeSession({ cost: "Total cost: $0.0100" }).open, policy, send, req({ key: "k3" })))).toBe("COST_GUARD");
+    expect(readAudit().map(e => e.status)).toEqual(["attempt", "ok", "cost-guard"]);
+  });
+});
+
+test("batch checks connections once for the whole batch, then each line through the core", async () => {
+  const s = fakeSession();
+  const lines = ["a", "b", "c", "d"].map(q => JSON.stringify({ connector: "slack", tool: "slack_search", args: { query: q } })).join("\n");
+  const outs: { ok: boolean }[] = [];
+  const code = await runBatch(lines, { profile: "default", concurrency: 2, perConnector: 2, ordered: true, budgetMs: 10_000 }, out => outs.push(out),
+    async () => ({ ...s.session, close: async () => {} }));
+  expect(code).toBe(0);
+  expect(outs.map(o => o.ok)).toEqual([true, true, true, true]);
+  expect(s.statusChecks()).toBe(1);
 });

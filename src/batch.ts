@@ -4,13 +4,13 @@ import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
 import { asAxiError, EXIT, fail, retryAfterMs, type Code } from "./errors";
 import { parseDeadline, prepare, profileName, requireManifest, requireTool, type Prepared } from "./call";
-import { callRead, requireConnected } from "./core";
+import { callRead, requireConnected, type Session } from "./core";
 import { fileOf, itemCount, parseList, shape } from "./output";
 import { newRun, writePrivate } from "./results";
 import { decide, loadPolicy } from "./policy";
 
 type Line = { id?: unknown; connector?: unknown; tool?: unknown; args?: unknown; select?: unknown; where?: unknown; items?: unknown; deadline?: unknown };
-type Task = { id: unknown; index: number; p: Prepared; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
+type Task = { id: unknown; index: number; p: Prepared; raw: Record<string, unknown>; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
 type Failure = { code: Code; message: string; help?: string[] };
 export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: Failure & { retryable: boolean; attempts?: number } };
 
@@ -51,7 +51,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
       const p = prepare(policy, manifest, tool, (line.args ?? {}) as Record<string, unknown>, false);
       if (p.cls === "write") throw fail("POLICY_DENIED", `${manifest.id}:${tool.name} is a write tool; batch runs reads only`);
       decide(policy, o.profile, manifest.id, tool, false);
-      tasks.push({ id: line.id ?? index, index, p, deadline: parseDeadline(line.deadline), attempts: 0, shape: {
+      tasks.push({ id: line.id ?? index, index, p, raw: (line.args ?? {}) as Record<string, unknown>, deadline: parseDeadline(line.deadline), attempts: 0, shape: {
         select: Array.isArray(line.select) ? line.select.map(String) : parseList(line.select as string | undefined),
         where: line.where as string | undefined, items: line.items as string | undefined } });
     } catch (error) {
@@ -68,9 +68,12 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
   let stopped: Failure | undefined; // a broken bridge, or a model reached: the rest of the batch fails with it
   try {
     const names = [...new Set(tasks.map(t => t.p.manifest.connectorName))];
+    let servers: Awaited<ReturnType<Client["waitForServers"]>> = [];
+    // One connection check for the whole batch: each line's read sees this snapshot, not a new discovery wait.
+    const session: Session = { request: (req, opts) => client.request(req, opts), waitForServers: async () => servers };
     const blind = new Map<string, Failure>(); // connector name → its failure, hints kept: the rest of its lines fail fast
     try {
-      const servers = await client.waitForServers(names);
+      servers = await client.waitForServers(names);
       for (const t of tasks) if (!blind.has(t.p.manifest.connectorName)) {
         try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error)); }
       }
@@ -101,7 +104,8 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
         const started = Date.now();
         t.attempts++;
         try {
-          const { value } = await callRead(async () => client, policy, o.profile, t.p, t.deadline); // the core's read, as the CLI's
+          const request = { connector: t.p.manifest.id, tool: t.p.tool.name, args: t.raw };
+          const { value } = await callRead(async () => session, policy, o.profile, request, t.deadline); // the core's read, as the CLI's
           done(t.index, { id: t.id, ok: true, ms: Date.now() - started, result: shape(value, t.shape) });
         } catch (error) {
           const e = errorOf(error);

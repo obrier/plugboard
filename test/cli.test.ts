@@ -119,6 +119,9 @@ test("policy: write tools need a write profile, --write, a key and the approved 
   expect((await run([...SEND, "--as", "executor", "--write", "--write-key", "k", "--expect-hash", "sha256:00"])).code).toBe(3); // wrong hash
   expect((await run(["slack", "delete-message", "--ts", "1", "--as", "executor", "--write", "--write-key", "k", "--expect-hash",
     await planHash(["slack", "delete-message", "--ts", "1"])])).code).toBe(3); // destructive, not opted in
+  const inAgent = await run([...SEND, "--as", "executor", "--write"], { env: { CLAUDECODE: "1" } }); // no key either
+  expect(inAgent.code).toBe(3); // refused as an agent session first, as before
+  expect(inAgent.all).toContain("inside a Claude Code session");
   expect(calls()).toHaveLength(0);
 });
 

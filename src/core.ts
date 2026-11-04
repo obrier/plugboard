@@ -2,14 +2,14 @@
 // policy before a session opens; a write is refused, replayed or audited here, never by the caller.
 import { createHash } from "node:crypto";
 import { AxiError } from "axi-sdk-js";
-import { appendAudit, keyState } from "./audit";
+import { appendAudit, claimKey, keyState } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
-import type { Prepared } from "./call";
+import { prepare, requireManifest, requireTool, type Prepared } from "./call";
 import { costGuard } from "./claude";
 import { classify as classifyError, fail } from "./errors";
 import { errorText, unwrap } from "./output";
-import { decide, profileFor, type Policy } from "./policy";
+import { classify, decide, profileFor, type Policy } from "./policy";
 
 export const BIN = "plugboard";
 /** What the core needs of a Claude Code session; opened only once a call is allowed. */
@@ -51,10 +51,33 @@ export function refOf(value: unknown): string | undefined {
   return undefined;
 }
 
+/** A call as a caller asks for it. The core resolves the tool from the cache and validates and hashes the
+ * args itself, so what the policy judges, what was approved and what is sent are always the same call. */
+export type CallRequest = { connector: string; tool: string; args?: Record<string, unknown> };
+
+function mint(policy: Policy, req: CallRequest, key?: string): Prepared {
+  const manifest = requireManifest(policy, req.connector);
+  const tool = requireTool(manifest, req.tool);
+  const args = { ...(req.args ?? {}) };
+  // A tool with its own idempotency_key gets the write key, so the service refuses a duplicate too; part of the hash.
+  if (key && "idempotency_key" in (tool.inputSchema.properties ?? {}) && args.idempotency_key === undefined) args.idempotency_key = key;
+  return prepare(policy, manifest, tool, args, classify(policy, manifest.id, tool) === "write");
+}
+
+export type Plan = { connector: string; tool: string; class: string; destructive: boolean; profile: string; decision: string; hash: string; payload: Record<string, unknown> };
+/** What a call would send and whether the profile allows it; a write's hash is what its approval names. */
+export function planCall(policy: Policy, profile: string, req: CallRequest, key?: string): Plan {
+  const p = mint(policy, req, key);
+  let decision = "allowed";
+  try { decide(policy, profile, p.manifest.id, p.tool, p.cls === "write"); } catch (error) { decision = `denied: ${(error as Error).message}`; }
+  return { connector: p.manifest.id, tool: p.tool.name, class: p.cls, destructive: p.tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload: p.args };
+}
+
 export type ReadResult = { raw: Record<string, any>; value: unknown };
 
 /** One read: the profile must allow it, the connector must be connected, and the session must stay zero-cost. */
-export async function callRead(open: OpenSession, policy: Policy, profile: string, p: Prepared, deadlineMs: number): Promise<ReadResult> {
+export async function callRead(open: OpenSession, policy: Policy, profile: string, req: CallRequest, deadlineMs: number): Promise<ReadResult> {
+  const p = mint(policy, req);
   decide(policy, profile, p.manifest.id, p.tool, false);
   const session = await open();
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
@@ -70,24 +93,31 @@ export type WriteResult =
 
 /** One write, never retried: the profile must allow it, the payload must be the approved one, and the
  * key names it once. Audited before the call, so a write that can't be audited is never sent. */
-export async function callWrite(open: OpenSession, policy: Policy, p: Prepared, req: WriteRequest): Promise<WriteResult> {
+export async function callWrite(open: OpenSession, policy: Policy, call: CallRequest, req: WriteRequest): Promise<WriteResult> {
   const { profile, key, expectHash } = req;
   if (process.env.CLAUDECODE && !profileFor(policy, profile).allowInAgent)
     throw fail("POLICY_DENIED", "Writes are refused inside a Claude Code session (CLAUDECODE is set)", ["Run the write from your own shell, or set allow_in_agent = true on its profile"]);
+  const p = mint(policy, call, key);
   decide(policy, profile, p.manifest.id, p.tool, true);
   if (!key) throw fail("VALIDATION_ERROR", "A write needs a key that names it", ["A key that names this one write, such as reply-42"]);
   if (expectHash !== p.hash) throw fail("POLICY_DENIED", `Payload hash ${p.hash} does not match the approved hash ${expectHash || "(missing)"}`, [
     "The approved payload changed, or was never approved: plan it again and approve the new hash",
   ]);
-  const { state, last } = keyState(key);
-  if (state === "ok") return { replayed: true, key, ref: (last?.ref as string | undefined) ?? null, at: last?.ts };
-  if (state === "unknown") throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} has no known outcome`, [
+  const replayOrRefuse = ({ state, last }: ReturnType<typeof keyState>): WriteResult | undefined => {
+    if (state === "ok") return { replayed: true, key, ref: (last?.ref as string | undefined) ?? null, at: last?.ts };
+    if (state === "unknown") throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} has no known outcome`, [
     `Check the destination by hand, then run \`${BIN} audit resolve ${key} --sent\` or \`--not-sent\``,
-  ]);
+    ]);
+    return undefined;
+  };
+  const early = replayOrRefuse(keyState(key)); // no session for a key already sent or unresolved
+  if (early) return early;
 
   const session = await open();
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
-  appendAudit({ key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid });
+  // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
+  const claimed = replayOrRefuse(claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid }));
+  if (claimed) return claimed;
   const started = Date.now();
   let raw: Record<string, any>;
   try {
