@@ -158,6 +158,17 @@ describe("transforms", () => {
     expect(p.aliases.x).toBeUndefined();
     expect(code(() => parsePolicy("", "p", { text: "[transforms]\n'a:b.c' = 'weekday'", path: "t" }))).toBe("VALIDATION_ERROR");
   });
+  test("a bad transforms.toml stops the command with an error naming that file, not the policy", () => {
+    const errorOf = (fn: () => unknown) => { try { fn(); } catch (e) { return e as AxiError; } throw new Error("no error"); };
+    for (const text of ["[transforms]\n'a:b.c' = 'weekday'", "[transforms]\n'a:b.c' = \n"]) {
+      const e = errorOf(() => parsePolicy("", "/c/policy.toml", { text, path: "/c/transforms.toml" }));
+      expect(e.code).toBe("VALIDATION_ERROR");
+      expect(e.message.startsWith("/c/transforms.toml: ")).toBe(true);
+      expect(e.message).not.toContain("policy");
+      expect(e.suggestions.join(" ")).toContain("Fix or remove the bad line in /c/transforms.toml");
+    }
+    expect(errorOf(() => parsePolicy("[profiles.x]\nmode = 'admin'", "/c/policy.toml")).message.startsWith("/c/policy.toml: ")).toBe(true);
+  });
   test("a key may use the names the CLI shows: short tool name and flag name", () => {
     const tool = { name: "slack_search_public", sourceName: "s", annotations: { readOnlyHint: true },
       inputSchema: { type: "object", properties: { afterTs: { type: "string" } } } };
