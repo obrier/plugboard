@@ -167,7 +167,12 @@ describe("transforms", () => {
       expect(e.message).not.toContain("policy");
       expect(e.suggestions.join(" ")).toContain("Fix or remove the bad line in /c/transforms.toml");
     }
-    expect(errorOf(() => parsePolicy("[profiles.x]\nmode = 'admin'", "/c/policy.toml")).message.startsWith("/c/policy.toml: ")).toBe(true);
+    const policyError = errorOf(() => parsePolicy("[profiles.x]\nmode = 'admin'", "/c/policy.toml"));
+    expect(policyError.message.startsWith("/c/policy.toml: ")).toBe(true);
+    expect(policyError.suggestions).toEqual(["Edit /c/policy.toml"]);
+    // transforms must be a table, in either file
+    expect(errorOf(() => parsePolicy("", "/c/policy.toml", { text: "transforms = 'unix'", path: "/c/transforms.toml" })).message).toBe("/c/transforms.toml: transforms must be a table of \"connector:tool.param\" = \"format\"");
+    expect(errorOf(() => parsePolicy("transforms = 5", "/c/policy.toml")).message.startsWith("/c/policy.toml: transforms must be a table")).toBe(true);
   });
   test("a key may use the names the CLI shows: short tool name and flag name", () => {
     const tool = { name: "slack_search_public", sourceName: "s", annotations: { readOnlyHint: true },
