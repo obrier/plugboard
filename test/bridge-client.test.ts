@@ -151,3 +151,9 @@ test("the child has no MCP output cap, whatever the parent sets: results over it
     if (saved === undefined) delete process.env.MAX_MCP_OUTPUT_TOKENS; else process.env.MAX_MCP_OUTPUT_TOKENS = saved;
   }
 });
+
+test("every child skips Claude Code's nonessential traffic: its telemetry flush cost ~600 ms on each close", async () => {
+  const client = await connect();
+  const result = await client.callTool<{ value: string }>("mcp__fake__echo", { action: "env", name: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" });
+  expect(result.structuredContent?.value).toBe("1");
+});

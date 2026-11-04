@@ -23,6 +23,10 @@ function record(value: unknown): value is Record<string, unknown> {
 // inherit them. Auth-carrying variables are kept.
 // The child never feeds a model, so Claude Code's MCP output cap only loses data: a text result over
 // it comes back as an "Output has been saved to" notice. A cap set by the parent is lifted.
+// Nor does it need Claude Code's nonessential traffic: flushing its telemetry on exit took ~600 ms of
+// every call. Turning it off doesn't touch connectors or billing (checked: calls still cost $0.0000).
+/** How often discovery asks the child for its connectors' status. A status request is local and cheap. */
+export const POLL_MS = 50;
 const KEEP = new Set(["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"]);
 export function childEnv(source: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
@@ -30,6 +34,7 @@ export function childEnv(source: Record<string, string | undefined> = process.en
     if (KEEP.has(key) || !(key === "CLAUDECODE" || key === "CLAUDE_PID" || /^CLAUDE_(CODE|AGENT_SDK|EFFORT|PREVIEW)_?/.test(key))) env[key] = value;
   }
   env.MAX_MCP_OUTPUT_TOKENS = "1000000000";
+  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
   return env;
 }
 
@@ -99,7 +104,6 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
       ...childEnv(),
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}`,
       ENABLE_TOOL_SEARCH: "false",
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     };
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"])
       delete env[key];
@@ -181,7 +185,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
       assert.ok(Array.isArray(status.mcpServers));
       if (status.mcpServers.length && status.mcpServers.every(server => record(server) && server.status !== "pending")) break;
       assert.ok(Date.now() < discoveryDeadline, "Connector discovery did not finish");
-      await sleep(200);
+      await sleep(POLL_MS);
     }
     send({ type: "user", message: { role: "user", content: "Local schema capture probe." },
       parent_tool_use_id: null, session_id: crypto.randomUUID() });
