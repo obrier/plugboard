@@ -61,8 +61,9 @@ export function canonical(value: unknown): string {
     return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical((value as any)[k])}`).join(",")}}`;
   return JSON.stringify(value);
 }
-export const payloadHash = (connector: string, tool: string, args: unknown) =>
-  `sha256:${createHash("sha256").update(canonical({ connector, tool, args }), "utf8").digest("hex")}`;
+/** The approval's hash: the connector, the tool (its name and, when given, the id the bridge calls) and the args. */
+export const payloadHash = (connector: string, tool: string, args: unknown, call?: string) =>
+  `sha256:${createHash("sha256").update(canonical({ connector, tool, args, ...(call ? { call } : {}) }), "utf8").digest("hex")}`;
 
 const SCHEMA_FORMATS: Record<string, string> = { "date-time": "rfc3339", date: "date" };
 /** A read tool's parameter time format: a [transforms] rule, keyed by the raw names or the ones the CLI shows,
@@ -94,7 +95,7 @@ export type Prepared = { manifest: Manifest; tool: ManifestTool; args: Record<st
 export function prepare(policy: Policy, manifest: Manifest, tool: ManifestTool, rawArgs: Record<string, unknown>, write: boolean): Prepared {
   const args = write ? rawArgs : applyTransforms(policy, manifest.id, tool, rawArgs);
   validate(tool, args);
-  return { manifest, tool, args, cls: classify(policy, manifest.id, tool), hash: payloadHash(manifest.id, tool.name, args) };
+  return { manifest, tool, args, cls: classify(policy, manifest.id, tool), hash: payloadHash(manifest.id, tool.name, args, tool.sourceName) };
 }
 
 // --- the call -------------------------------------------------------------------
@@ -136,8 +137,8 @@ export async function runTool(connectorRef: string, args: string[]) {
   const request = { connector: manifest.id, tool: tool.name, args: mergeArgs(parsed) };
   const key = typeof g["write-key"] === "string" ? g["write-key"] : undefined;
 
+  const plan = planCall(policy, profile, request, key); // validates the args: a bad arg is exit 2 before any policy refusal
   if (g.plan) {
-    const plan = planCall(policy, profile, request, key);
     return format === "json" ? JSON.stringify(plan) : { plan, ...(cls === "write" ? { help: [`Run with --as <write profile> --write --write-key <k> --expect-hash ${plan.hash}`] } : {}) };
   }
   decide(policy, profile, manifest.id, tool, write); // the flags make sense for this tool; the core decides again

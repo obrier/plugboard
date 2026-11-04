@@ -2,12 +2,12 @@
 // policy before a session opens; a write is refused, replayed or audited here, never by the caller.
 import { createHash } from "node:crypto";
 import { AxiError } from "axi-sdk-js";
-import { appendAudit, claimKey, keyState } from "./audit";
+import { alive, appendAudit, claimKey, keyState } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
 import { prepare, requireManifest, requireTool, type Prepared } from "./call";
 import { costGuard } from "./claude";
-import { classify as classifyError, fail } from "./errors";
+import { asAxiError, classify as classifyError, fail, type Code } from "./errors";
 import { errorText, unwrap } from "./output";
 import { classify, decide, profileFor, type Policy } from "./policy";
 
@@ -58,7 +58,9 @@ export type CallRequest = { connector: string; tool: string; args?: Record<strin
 function mint(policy: Policy, req: CallRequest, key?: string): Prepared {
   const manifest = requireManifest(policy, req.connector);
   const tool = requireTool(manifest, req.tool);
-  const args = { ...(req.args ?? {}) };
+  // Plain JSON once, before transforms, validation and the hash: the wire is JSON, so what is checked and
+  // approved is exactly what is sent (no toJSON, getter or Date can change between the two).
+  const args = JSON.parse(JSON.stringify(req.args ?? {})) as Record<string, unknown>;
   // A tool with its own idempotency_key gets the write key, so the service refuses a duplicate too; part of the hash.
   if (key && "idempotency_key" in (tool.inputSchema.properties ?? {}) && args.idempotency_key === undefined) args.idempotency_key = key;
   return prepare(policy, manifest, tool, args, classify(policy, manifest.id, tool) === "write");
@@ -95,9 +97,9 @@ export type WriteResult =
  * key names it once. Audited before the call, so a write that can't be audited is never sent. */
 export async function callWrite(open: OpenSession, policy: Policy, call: CallRequest, req: WriteRequest): Promise<WriteResult> {
   const { profile, key, expectHash } = req;
+  const p = mint(policy, call, key);
   if (process.env.CLAUDECODE && !profileFor(policy, profile).allowInAgent)
     throw fail("POLICY_DENIED", "Writes are refused inside a Claude Code session (CLAUDECODE is set)", ["Run the write from your own shell, or set allow_in_agent = true on its profile"]);
-  const p = mint(policy, call, key);
   decide(policy, profile, p.manifest.id, p.tool, true);
   if (!key) throw fail("VALIDATION_ERROR", "A write needs a key that names it", ["A key that names this one write, such as reply-42"]);
   if (expectHash !== p.hash) throw fail("POLICY_DENIED", `Payload hash ${p.hash} does not match the approved hash ${expectHash || "(missing)"}`, [
@@ -105,6 +107,10 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   ]);
   const replayOrRefuse = ({ state, last }: ReturnType<typeof keyState>): WriteResult | undefined => {
     if (state === "ok") return { replayed: true, key, ref: (last?.ref as string | undefined) ?? null, at: last?.ts };
+    if (state === "unknown" && last?.status === "attempt" && typeof last.pid === "number" && alive(last.pid))
+      throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} is in progress (process ${last.pid})`, [
+        "Wait for it to finish, then run the same write again: it replays the result",
+      ]);
     if (state === "unknown") throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} has no known outcome`, [
     `Check the destination by hand, then run \`${BIN} audit resolve ${key} --sent\` or \`--not-sent\``,
     ]);
@@ -116,7 +122,14 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const session = await open();
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
   // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
-  const claimed = replayOrRefuse(claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid }));
+  let claim: Awaited<ReturnType<typeof claimKey>>;
+  try {
+    claim = await claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid });
+  } catch (error) { // the audit log can't record the attempt: nothing is sent
+    const e = asAxiError(error);
+    throw fail(e.code as Code, `Write ${key} was not sent: ${e.message}`, e.suggestions);
+  }
+  const claimed = replayOrRefuse(claim);
   if (claimed) return claimed;
   const started = Date.now();
   let raw: Record<string, any>;

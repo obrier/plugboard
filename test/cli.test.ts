@@ -456,3 +456,8 @@ test("batch: a session that stops being zero-cost stops the batch at that line, 
   expect(out.map(o => o.error?.code)).toEqual(["COST_GUARD", "COST_GUARD", "COST_GUARD"]);
   expect(calls()).toHaveLength(1); // a model was reached: no further call is made
 });
+
+test("args are checked before the policy, as before: a bad arg is exit 2 even for a profile that would refuse", async () => {
+  expect((await run(["slack", "send-message", "--channel", "C1", "--as", "gather", "--write"])).code).toBe(2); // no --message
+  expect((await run(["slack", "search-public", "--after", "notatime", "--as", "nope"])).code).toBe(2);
+});

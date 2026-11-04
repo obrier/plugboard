@@ -1,4 +1,6 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
+import { fail } from "./errors";
 import { join } from "node:path";
 import { stateDir } from "./platform";
 
@@ -47,7 +49,7 @@ export function unresolvedKeys(entries = readAudit()) {
 
 /** The key's state and, when it may be sent (none, or a past error), its attempt line, in one step under a
  * short lock: no other writer, in this process or another, can claim the same key in between. */
-export function claimKey(key: string, attempt: Omit<AuditEntry, "ts">): { state: KeyState; last?: AuditEntry } {
+export async function claimKey(key: string, attempt: Omit<AuditEntry, "ts">): Promise<{ state: KeyState; last?: AuditEntry }> {
   return withAuditLock(() => {
     const claim = keyState(key);
     if (claim.state === "none" || claim.state === "error") appendAudit(attempt);
@@ -55,19 +57,35 @@ export function claimKey(key: string, attempt: Omit<AuditEntry, "ts">): { state:
   });
 }
 
+/** A process that still runs (EPERM: it runs, as another user). */
+export function alive(pid: number) {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
 const LOCK_WAIT_MS = 5_000;
-const LOCK_STALE_MS = 30_000; // held only for a read and an append: older means its holder died
-function withAuditLock<T>(run: () => T): T {
+const LOCK_STALE_MS = 30_000; // a lock with no readable holder (cut short at creation) older than this is stale
+/** The lock names its holder's pid, so a dead holder's lock is taken over at once. Waiting yields to the event
+ * loop; the work under the lock is synchronous, so nothing in this process interleaves with it either. */
+async function withAuditLock<T>(run: () => T): Promise<T> {
   mkdirSync(stateDir(), { recursive: true });
   const lock = join(stateDir(), "audit.lock");
   const until = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    try { closeSync(openSync(lock, "wx", 0o600)); break; } catch (error) {
+    try { writeFileSync(lock, JSON.stringify({ pid: process.pid }), { flag: "wx", mode: 0o600 }); break; } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try { if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { force: true }); } catch { /* gone meanwhile */ }
-      if (Date.now() > until) throw new Error(`The audit log is locked (${lock}); another plugboard write holds it`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      const holder = lockHolder(lock);
+      if (holder === undefined ? olderThan(lock, LOCK_STALE_MS) : !alive(holder)) { rmSync(lock, { force: true }); continue; }
+      if (Date.now() > until) throw fail("TIMEOUT", `The audit log is locked by process ${holder ?? "unknown"} (${lock})`, [
+        "Try again once that write has finished; if that process is gone, remove the lock file",
+      ]);
+      await sleep(25);
     }
   }
   try { return run(); } finally { rmSync(lock, { force: true }); }
+}
+function lockHolder(lock: string): number | undefined {
+  try { const pid = JSON.parse(readFileSync(lock, "utf8")).pid; return Number.isInteger(pid) ? pid : undefined; } catch { return undefined; }
+}
+function olderThan(path: string, ms: number) {
+  try { return Date.now() - statSync(path).mtimeMs > ms; } catch { return true; }
 }
