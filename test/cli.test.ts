@@ -224,7 +224,7 @@ test("doctor never probes a tool the profile denies", async () => {
   writeFileSync(join(root, "policy.toml"), `${POLICY}\n[profiles.narrow]\nmode = "read"\nallow = ["slack:*"]\ndeny = ["slack:slack_search_public"]\n`);
   const result = JSON.parse((await run(["doctor", "--as", "narrow", "--out", "json"])).stdout);
   expect(calls().map(c => c.tool)).not.toContain("mcp__claude_ai_Slack__slack_search_public");
-  expect(result.checks.find((c: { check: string }) => c.check === "read:slack")).toBeUndefined();
+  expect(result.checks.find((c: { check: string }) => c.check === "read:slack")).toMatchObject({ status: "info", detail: expect.stringContaining("not checked") });
 });
 
 test("doctor warns about aliases the policy defines, never about built-in ones", async () => {
@@ -310,4 +310,16 @@ test("usage: counts only real tool calls, maps UUID-named connectors by tool nam
     expect(listTools(parsePolicy("", "p"), loadManifest("slack")!, { cap: 2, all: true }).tools).toHaveLength(4);
   } finally { delete process.env.PLUGBOARD_CACHE; }
   expect((await run(["slack", "--bogus"])).code).toBe(2);
+});
+
+test("doctor: a connector it can't probe gets a line saying so, not silence", async () => {
+  const path = join(root, "cache/manifests/slack.json");
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  for (const tool of manifest.tools) tool.inputSchema.required = Object.keys(tool.inputSchema.properties ?? {}).slice(0, 1);
+  writeFileSync(path, JSON.stringify(manifest));
+  writeFileSync(join(fake, "gmail-connected"), "1");
+  const r = await run(["doctor", "--as", "gather", "--out", "json"]);
+  const checks: { check: string; status: string; detail: string }[] = JSON.parse(r.stdout).checks;
+  expect(checks.find(c => c.check === "read:slack")).toMatchObject({ status: "info", detail: expect.stringContaining("not checked") });
+  expect(checks.find(c => c.check === "read:gmail")?.status).toBe("ok");
 });
