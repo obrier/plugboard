@@ -1,16 +1,16 @@
 import { parseArgs } from "node:util";
 import { encode } from "@toon-format/toon";
-import { AxiError } from "axi-sdk-js";
 import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
 import { asAxiError, EXIT, fail, retryAfterMs, type Code } from "./errors";
-import { invoke, parseDeadline, prepare, profileName, requireConnected, requireManifest, requireTool, type Prepared } from "./call";
-import { fileOf, itemCount, parseList, shape, unwrap } from "./output";
+import { parseDeadline, prepare, profileName, requireManifest, requireTool, type Prepared } from "./call";
+import { callRead, requireConnected, type Session } from "./core";
+import { fileOf, itemCount, parseList, shape } from "./output";
 import { newRun, writePrivate } from "./results";
 import { decide, loadPolicy } from "./policy";
 
 type Line = { id?: unknown; connector?: unknown; tool?: unknown; args?: unknown; select?: unknown; where?: unknown; items?: unknown; deadline?: unknown };
-type Task = { id: unknown; index: number; p: Prepared; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
+type Task = { id: unknown; index: number; p: Prepared; raw: Record<string, unknown>; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
 type Failure = { code: Code; message: string; help?: string[] };
 export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: Failure & { retryable: boolean; attempts?: number } };
 
@@ -51,7 +51,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
       const p = prepare(policy, manifest, tool, (line.args ?? {}) as Record<string, unknown>, false);
       if (p.cls === "write") throw fail("POLICY_DENIED", `${manifest.id}:${tool.name} is a write tool; batch runs reads only`);
       decide(policy, o.profile, manifest.id, tool, false);
-      tasks.push({ id: line.id ?? index, index, p, deadline: parseDeadline(line.deadline), attempts: 0, shape: {
+      tasks.push({ id: line.id ?? index, index, p, raw: (line.args ?? {}) as Record<string, unknown>, deadline: parseDeadline(line.deadline), attempts: 0, shape: {
         select: Array.isArray(line.select) ? line.select.map(String) : parseList(line.select as string | undefined),
         where: line.where as string | undefined, items: line.items as string | undefined } });
     } catch (error) {
@@ -65,12 +65,15 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
   let client: Client;
   try { client = await makeClient(); } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
-  let broken = false;
+  let stopped: Failure | undefined; // a broken bridge, or a model reached: the rest of the batch fails with it
   try {
     const names = [...new Set(tasks.map(t => t.p.manifest.connectorName))];
+    let servers: Awaited<ReturnType<Client["waitForServers"]>> = [];
+    // One connection check for the whole batch: each line's read sees this snapshot, not a new discovery wait.
+    const session: Session = { request: (req, opts) => client.request(req, opts), waitForServers: async () => servers };
     const blind = new Map<string, Failure>(); // connector name → its failure, hints kept: the rest of its lines fail fast
     try {
-      const servers = await client.waitForServers(names);
+      servers = await client.waitForServers(names);
       for (const t of tasks) if (!blind.has(t.p.manifest.connectorName)) {
         try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error)); }
       }
@@ -83,7 +86,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
     const budgetEnd = Date.now() + o.budgetMs;
     await new Promise<void>(resolve => {
       const pump = () => {
-        if (broken) failAll(queue, { code: "BRIDGE_BROKEN", message: "Bridge failed during the batch" });
+        if (stopped) failAll(queue, stopped);
         if (Date.now() > budgetEnd) failAll(queue, { code: "TIMEOUT", message: "Batch budget exceeded" });
         for (let i = 0; i < queue.length && running < o.concurrency; i++) {
           const t = queue[i]!;
@@ -101,15 +104,17 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
         const started = Date.now();
         t.attempts++;
         try {
-          const raw = await invoke(client, t.p, t.deadline);
-          done(t.index, { id: t.id, ok: true, ms: Date.now() - started, result: shape(unwrap(raw), t.shape) });
+          const request = { connector: t.p.manifest.id, tool: t.p.tool.name, args: t.raw };
+          const { value } = await callRead(async () => session, policy, o.profile, request, t.deadline); // the core's read, as the CLI's
+          done(t.index, { id: t.id, ok: true, ms: Date.now() - started, result: shape(value, t.shape) });
         } catch (error) {
           const e = errorOf(error);
           const name = t.p.manifest.connectorName;
-          if (e.code === "BRIDGE_BROKEN") broken = true;
+          if (e.code === "BRIDGE_BROKEN") stopped ??= { code: "BRIDGE_BROKEN", message: "Bridge failed during the batch" };
+          if (e.code === "COST_GUARD") stopped ??= { ...e, message: `Stopped: ${e.message}` };
           if (e.code === "AUTH_REQUIRED") blind.set(name, e);
           const again = (e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2);
-          if (again && !broken) {
+          if (again && !stopped) {
             if (e.code === "RATE_LIMITED") {
               caps.set(name, 1);
               await sleep(retryAfterMs(e.message) ?? backoffMs[t.attempts - 1]! * (1 + Math.random() * 0.2));
@@ -122,7 +127,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
       };
       pump();
     });
-    if (broken) return EXIT.BRIDGE_BROKEN;
+    if (stopped) return EXIT[stopped.code];
     try { await costGuard(client); } catch (error) {
       const e = errorOf(error);
       emit({ id: null, ok: false, error: { ...e, retryable: false } });

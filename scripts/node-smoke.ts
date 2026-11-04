@@ -13,7 +13,8 @@ const { loadPolicy } = await import("../src/policy");
 const { connect, costGuard } = await import("../src/claude");
 const { loadManifest, refresh } = await import("../src/cache");
 const { findTool } = await import("../src/cache");
-const { invoke, prepare } = await import("../src/call");
+const { prepare } = await import("../src/call");
+const { invoke } = await import("../src/core");
 
 const { runtime: { name: runtime } } = await import("../src/runtime");
 const ms = (t: number) => `${Math.round(performance.now() - t)} ms`;

@@ -119,6 +119,9 @@ test("policy: write tools need a write profile, --write, a key and the approved 
   expect((await run([...SEND, "--as", "executor", "--write", "--write-key", "k", "--expect-hash", "sha256:00"])).code).toBe(3); // wrong hash
   expect((await run(["slack", "delete-message", "--ts", "1", "--as", "executor", "--write", "--write-key", "k", "--expect-hash",
     await planHash(["slack", "delete-message", "--ts", "1"])])).code).toBe(3); // destructive, not opted in
+  const inAgent = await run([...SEND, "--as", "executor", "--write"], { env: { CLAUDECODE: "1" } }); // no key either
+  expect(inAgent.code).toBe(3); // refused as an agent session first, as before
+  expect(inAgent.all).toContain("inside a Claude Code session");
   expect(calls()).toHaveLength(0);
 });
 
@@ -150,6 +153,22 @@ test("write: a timeout is WRITE_OUTCOME_UNKNOWN (exit 6), blocks the key until r
   expect((await run(["audit", "resolve", "out-2", "--sent"])).code).toBe(0);
   expect((await run(args)).all).toContain("replayed: true");
   expect(calls()).toHaveLength(1);
+});
+
+test("audit: the listing leaves out attempts that lost a claim, and their withdrawals", async () => {
+  mkdirSync(join(root, "state"), { recursive: true });
+  const ts = new Date().toISOString();
+  const lines = [
+    { ts, key: "k-1", status: "attempt", nonce: "won" },
+    { ts, key: "k-1", status: "attempt", nonce: "lost" },
+    { ts, key: "k-1", status: "withdrawn", nonce: "lost" },
+    { ts, key: "k-1", status: "ok", ref: "1.2" },
+  ];
+  writeFileSync(join(root, "state/audit.jsonl"), lines.map(l => JSON.stringify(l)).join("\n") + "\n");
+  const out = (await run(["audit"])).all;
+  expect(out).toContain("won");
+  expect(out).not.toContain("lost");
+  expect(out).not.toContain("withdrawn");
 });
 
 test("write: refused inside a Claude Code session unless the profile allows it", async () => {
@@ -442,4 +461,19 @@ test("usage says so when its counts can't be saved, instead of claiming it saved
   expect(r.code).toBe(0);
   expect(r.all).not.toContain("Saved to the cache");
   expect(r.all).toContain("not saved");
+});
+
+test("batch: a session that stops being zero-cost stops the batch at that line, not at the end", async () => {
+  writeFileSync(join(fake, "cost"), "1");
+  const lines = ["a", "b", "c"].map(q => JSON.stringify({ id: q, connector: "slack", tool: "search-public", args: { query: q } })).join("\n");
+  const r = await run(["batch", "--as", "gather", "--ordered", "--concurrency", "1"], { stdin: lines });
+  const out = r.stdout.trim().split("\n").map(l => JSON.parse(l));
+  expect(r.code).toBe(10);
+  expect(out.map(o => o.error?.code)).toEqual(["COST_GUARD", "COST_GUARD", "COST_GUARD"]);
+  expect(calls()).toHaveLength(1); // a model was reached: no further call is made
+});
+
+test("args are checked before the policy, as before: a bad arg is exit 2 even for a profile that would refuse", async () => {
+  expect((await run(["slack", "send-message", "--channel", "C1", "--as", "gather", "--write"])).code).toBe(2); // no --message
+  expect((await run(["slack", "search-public", "--after", "notatime", "--as", "nope"])).code).toBe(2);
 });

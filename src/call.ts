@@ -2,19 +2,17 @@ import { createHash } from "node:crypto";
 import Ajv, { type ValidateFunction } from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { AxiError } from "axi-sdk-js";
-import { appendAudit, keyState } from "./audit";
-import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import { findTool, loadIndex, loadManifest, nearNames, shortName, type Manifest, type ManifestTool } from "./cache";
-import { connect, costGuard } from "./claude";
-import { classify as classifyError, fail } from "./errors";
+import { connect } from "./claude";
+import { fail } from "./errors";
 import { kebab, mergeArgs, parseFlags, summaryOf, toolHelp, typeOf } from "./flags";
-import { defaultFormat, errorText, OUT_FORMATS, parseList, render, shape, unwrap } from "./output";
+import { defaultFormat, OUT_FORMATS, parseList, render, shape } from "./output";
 import { loadUsage } from "./usage";
-import { classify, decide, loadPolicy, profileFor, resolveConnector, type Policy, type ToolClass } from "./policy";
+import { classify, decide, loadPolicy, resolveConnector, type Policy, type ToolClass } from "./policy";
 import { formatTime, inFormat, parseTime } from "./time";
 
-export const BIN = "plugboard";
+import { BIN, callRead, callWrite, planCall, type OpenSession } from "./core";
+export { BIN };
 
 // --- lookup ---------------------------------------------------------------------
 
@@ -63,8 +61,9 @@ export function canonical(value: unknown): string {
     return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical((value as any)[k])}`).join(",")}}`;
   return JSON.stringify(value);
 }
-export const payloadHash = (connector: string, tool: string, args: unknown) =>
-  `sha256:${createHash("sha256").update(canonical({ connector, tool, args }), "utf8").digest("hex")}`;
+/** The approval's hash: the connector, the tool (its name and, when given, the id the bridge calls) and the args. */
+export const payloadHash = (connector: string, tool: string, args: unknown, call?: string) =>
+  `sha256:${createHash("sha256").update(canonical({ connector, tool, args, ...(call ? { call } : {}) }), "utf8").digest("hex")}`;
 
 const SCHEMA_FORMATS: Record<string, string> = { "date-time": "rfc3339", date: "date" };
 /** A read tool's parameter time format: a [transforms] rule, keyed by the raw names or the ones the CLI shows,
@@ -96,7 +95,7 @@ export type Prepared = { manifest: Manifest; tool: ManifestTool; args: Record<st
 export function prepare(policy: Policy, manifest: Manifest, tool: ManifestTool, rawArgs: Record<string, unknown>, write: boolean): Prepared {
   const args = write ? rawArgs : applyTransforms(policy, manifest.id, tool, rawArgs);
   validate(tool, args);
-  return { manifest, tool, args, cls: classify(policy, manifest.id, tool), hash: payloadHash(manifest.id, tool.name, args) };
+  return { manifest, tool, args, cls: classify(policy, manifest.id, tool), hash: payloadHash(manifest.id, tool.name, args, tool.sourceName) };
 }
 
 // --- the call -------------------------------------------------------------------
@@ -106,41 +105,6 @@ export function parseDeadline(value: unknown, fallback = 30_000): number {
   const match = /^(\d+(?:\.\d+)?)(ms|s|m)?$/.exec(String(value));
   if (!match) throw fail("VALIDATION_ERROR", `--deadline must look like 30s, 500ms or 2m, got "${value}"`);
   return Number(match[1]) * ({ ms: 1, s: 1000, m: 60_000 }[match[2] as "ms" | "s" | "m"] ?? 1000);
-}
-
-/** A live server must be connected; anything else is AUTH_REQUIRED (needs-auth, failed) or NOT_FOUND. */
-export function requireConnected(servers: ConnectorServer[], manifest: Manifest) {
-  const server = servers.find(s => s.name === manifest.connectorName);
-  if (!server) throw fail("NOT_FOUND", `${manifest.connectorName} is no longer listed by Claude Code`, [`Run \`${BIN} refresh\``]);
-  if (server.status !== "connected") throw fail("AUTH_REQUIRED", `${manifest.connectorName} is ${server.status}`, [
-    `Reconnect it in claude.ai → Settings → Connectors${server.error ? ` (${server.error.slice(0, 120)})` : ""}`,
-  ]);
-}
-
-export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepared, deadlineMs: number) {
-  let result: Record<string, any>;
-  try {
-    result = await client.request({ subtype: "mcp_call", tool: p.tool.sourceName, arguments: p.args }, { timeoutMs: deadlineMs });
-  } catch (error) {
-    const message = (error as Error).message;
-    throw fail(classifyError(message), message);
-  }
-  if (result.isError === true) {
-    const message = errorText(result);
-    throw fail(classifyError(message), message);
-  }
-  return result;
-}
-
-/** An id worth keeping as sent_ref: Slack ts, a message or event id, a permalink. */
-export function refOf(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  for (const key of ["ts", "message_ts", "messageId", "id", "eventId", "threadId", "permalink"]) {
-    const v = (value as any)[key];
-    if (typeof v === "string" || typeof v === "number") return String(v);
-  }
-  for (const v of Object.values(value)) if (v && typeof v === "object" && !Array.isArray(v)) { const r = refOf(v); if (r) return r; }
-  return undefined;
 }
 
 export const profileName = (globals: Record<string, string | boolean>) =>
@@ -169,75 +133,30 @@ export async function runTool(connectorRef: string, args: string[]) {
   if (!OUT_FORMATS.includes(format)) throw fail("VALIDATION_ERROR", `--out must be one of ${OUT_FORMATS.join(", ")}`);
   const write = g.write === true;
   const profile = profileName(g);
-  const merged = mergeArgs(parsed);
-  // Tools with their own idempotency_key (35 Datadog writes) get the --write-key, so the service also
-  // refuses a duplicate. Done before hashing: run --plan with the same --write-key to get the hash.
-  if (typeof g["write-key"] === "string" && "idempotency_key" in (tool.inputSchema.properties ?? {}) && merged.idempotency_key === undefined)
-    merged.idempotency_key = g["write-key"];
-  const p = prepare(policy, manifest, tool, merged, write);
+  // The raw request: the core resolves, validates and hashes it, and fills a tool's own idempotency_key from the key.
+  const request = { connector: manifest.id, tool: tool.name, args: mergeArgs(parsed) };
+  const key = typeof g["write-key"] === "string" ? g["write-key"] : undefined;
 
+  const plan = planCall(policy, profile, request, key); // validates the args: a bad arg is exit 2 before any policy refusal
   if (g.plan) {
-    let decision = "allowed";
-    try { decide(policy, profile, manifest.id, tool, cls === "write"); } catch (error) { decision = `denied: ${(error as Error).message}`; }
-    const plan = { connector: manifest.id, tool: tool.name, class: cls, destructive: tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload: p.args };
-    return format === "json" ? JSON.stringify(plan) : { plan, ...(cls === "write" ? { help: [`Run with --as <write profile> --write --write-key <k> --expect-hash ${p.hash}`] } : {}) };
+    return format === "json" ? JSON.stringify(plan) : { plan, ...(cls === "write" ? { help: [`Run with --as <write profile> --write --write-key <k> --expect-hash ${plan.hash}`] } : {}) };
   }
-  decide(policy, profile, manifest.id, tool, write);
+  decide(policy, profile, manifest.id, tool, write); // the flags make sense for this tool; the core decides again
   const deadline = parseDeadline(g.deadline);
   const shapeOpts = { select: parseList(g.select as string | undefined), where: g.where as string | undefined, items: g.items as string | undefined };
 
-  if (cls === "write") return runWrite(policy, p, profile, g, deadline, format, shapeOpts);
-
-  const client = await connect(policy);
+  // The CLI's session: opened by the core once the call is allowed, closed here whatever happens.
+  let client: Awaited<ReturnType<typeof connect>> | undefined;
+  const open: OpenSession = async () => (client = await connect(policy));
   try {
-    requireConnected(await client.waitForServers([manifest.connectorName]), manifest);
-    const raw = await invoke(client, p, deadline);
-    await costGuard(client);
-    return render({ raw, value: shape(unwrap(raw), shapeOpts), format, full: g.full === true });
-  } finally { await client.close(); }
-}
-
-async function runWrite(policy: Policy, p: Prepared, profile: string, g: Record<string, string | boolean>, deadline: number,
-  format: string, shapeOpts: Parameters<typeof shape>[1]) {
-  if (process.env.CLAUDECODE && !profileFor(policy, profile).allowInAgent)
-    throw fail("POLICY_DENIED", "Writes are refused inside a Claude Code session (CLAUDECODE is set)", ["Run the write from your own shell, or set allow_in_agent = true on its profile"]);
-  const key = g["write-key"];
-  if (typeof key !== "string" || !key) throw fail("VALIDATION_ERROR", "--write needs --write-key <k>", ["A key that names this one write, such as reply-42"]);
-  if (g["expect-hash"] !== p.hash) throw fail("POLICY_DENIED", `Payload hash ${p.hash} does not match --expect-hash ${g["expect-hash"] ?? "(missing)"}`, [
-    "The approved payload changed, or was never approved: run --plan and re-approve",
-  ]);
-  const { state, last } = keyState(key);
-  if (state === "ok") return { replayed: true, key, ref: last?.ref ?? null, at: last?.ts, help: ["Already sent under this key: nothing was called"] };
-  if (state === "unknown") throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} has no known outcome`, [
-    "Check the destination by hand, then run `plugboard audit resolve " + key + " --sent` or `--not-sent`",
-  ]);
-
-  const client = await connect(policy);
-  try {
-    requireConnected(await client.waitForServers([p.manifest.connectorName]), p.manifest);
-    const base = { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash };
-    appendAudit({ ...base, status: "attempt", pid: process.pid });
-    const started = Date.now();
-    let raw: Record<string, any>;
-    try {
-      raw = await invoke(client, p, deadline); // never retried
-    } catch (error) {
-      const code = error instanceof AxiError ? error.code : "UPSTREAM_ERROR";
-      if (code === "TIMEOUT" || code === "BRIDGE_BROKEN") {
-        appendAudit({ key, status: "unknown", code, ms: Date.now() - started });
-        throw fail("WRITE_OUTCOME_UNKNOWN", `Write ${key} may or may not have happened: ${(error as Error).message}`, [
-          "Check the destination by hand, then `plugboard audit resolve " + key + " --sent|--not-sent`",
-        ]);
-      }
-      appendAudit({ key, status: "error", code, message: (error as Error).message.slice(0, 300), ms: Date.now() - started });
-      throw error;
+    if (cls === "write") {
+      const out = await callWrite(open, policy, request, { profile, key: key ?? "", expectHash: String(g["expect-hash"] ?? ""), deadlineMs: deadline });
+      if (out.replayed) return { ...out, help: ["Already sent under this key: nothing was called"] };
+      return render({ raw: out.raw, value: shape(out.value, shapeOpts), format, full: g.full === true, header: { sent: true, key: out.key, ref: out.ref } });
     }
-    const value = unwrap(raw);
-    const ref = refOf(value);
-    appendAudit({ key, status: "ok", ms: Date.now() - started, result_sha256: createHash("sha256").update(JSON.stringify(raw)).digest("hex"), ...(ref ? { ref } : {}) });
-    try { await costGuard(client); } catch (error) { appendAudit({ key, status: "cost-guard", message: (error as Error).message }); throw error; }
-    return render({ raw, value: shape(value, shapeOpts), format, full: g.full === true, header: { sent: true, key, ref: ref ?? null } });
-  } finally { await client.close(); }
+    const out = await callRead(open, policy, profile, request, deadline);
+    return render({ raw: out.raw, value: shape(out.value, shapeOpts), format, full: g.full === true });
+  } finally { await client?.close(); }
 }
 
 /** With usage data (`plugboard usage`), used tools come first and the list is capped; --all shows everything. */
