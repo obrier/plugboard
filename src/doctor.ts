@@ -165,7 +165,9 @@ export async function doctor(argv: string[]) {
       for (const id of required) {
         const manifest = loadManifest(id);
         const tools = manifest ? probeTools(policy, profile, id, manifest.tools) : [];
-        if (blind.has(id) || !manifest || !tools.length || broken) continue;
+        if (blind.has(id) || broken || !manifest) continue; // already reported (a missing manifest by drift)
+        // A connector left unprobed still gets a line, so it never looks checked when it isn't.
+        if (!tools.length) { add(`read:${id}`, "info", `not checked: ${profile} allows no read tool here that runs without arguments`); continue; }
         const result = await probe(tools, tool => invoke(client!, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
         if (result.tool) add(`read:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
         else {
