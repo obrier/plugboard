@@ -141,7 +141,9 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   if (!claim.claimed) {
     const lost = replayOrRefuse(claim);
     if (lost) return lost;
-    if (claim.state === "error") throw fail("UPSTREAM_ERROR", `A concurrent write under key ${key} failed${typeof claim.last?.message === "string" ? `: ${claim.last.message}` : ""}`, [
+    // Lost while the key reads failed: a rival claimed it after this call's pre-check, then didn't send.
+    const why = typeof claim.last?.message === "string" ? `: ${claim.last.message}` : claim.last?.status === "resolved-not-sent" ? " (resolved by hand as not sent)" : "";
+    if (claim.state === "error") throw fail("UPSTREAM_ERROR", `A concurrent write under key ${key} didn't send${why}`, [
       "Nothing was sent by this call. Run the write again to retry",
     ]);
     throw fail("WRITE_OUTCOME_UNKNOWN", `A write under key ${key} is in progress`, ["Wait for it to finish, then run the same write again: it replays the result"]);

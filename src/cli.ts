@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { AxiError, installSessionStartHooks, runAxiCli, sessionStartHookStatus, uninstallSessionStartHooks } from "axi-sdk-js";
 import { encode } from "@toon-format/toon";
-import { appendAudit, readAudit, unresolvedKeys } from "./audit";
+import { appendAudit, lostLines, readAudit, unresolvedKeys } from "./audit";
 import { batchCommand } from "./batch";
 import { loadIndex, loadManifest, manifestIds, refresh, shortName } from "./cache";
 import { BIN, runTool } from "./call";
@@ -171,8 +171,8 @@ function auditCommand(args: string[]) {
   if (!since) throw fail("VALIDATION_ERROR", "--since must look like 12h, 1d or 2w");
   const from = Date.now() - Number(since[1]) * { h: 3_600_000, d: 86_400_000, w: 604_800_000 }[since[2] as "h" | "d" | "w"];
   const entries = readAudit();
-  const lost = new Set(entries.filter(e => e.status === "withdrawn").map(e => e.nonce));
-  return { entries: entries.filter(e => Date.parse(e.ts) >= from && e.status !== "withdrawn" && !(e.status === "attempt" && e.nonce !== undefined && lost.has(e.nonce))) };
+  const lost = lostLines(entries);
+  return { entries: entries.filter(e => Date.parse(e.ts) >= from && !lost.has(e)) };
 }
 
 /** An explicit --out other than toon asks for that format on stdout, so errors stay off it even with AXI on. */

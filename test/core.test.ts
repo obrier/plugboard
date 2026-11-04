@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readAudit } from "../src/audit";
+import { claimKey, keyState, readAudit, unresolvedKeys } from "../src/audit";
 import { runBatch } from "../src/batch";
 import type { Manifest } from "../src/cache";
 import { callRead, callWrite, planCall, type Session } from "../src/core";
@@ -218,5 +218,35 @@ describe("claims that lose to a rival", () => {
     ];
     writeFileSync(join(root, "state", "audit.jsonl"), lines.map(l => JSON.stringify(l)).join("\n") + "\n");
     expect(await callWrite(fakeSession().open, policy, send, { profile: "executor", key: "k", expectHash: hash(), deadlineMs: 1_000 })).toMatchObject({ replayed: true, ref: "1730.1" });
+  });
+  const seed = (lines: object[]) => {
+    writeJson(join(root, "state", "seed.json"), {});
+    const ts = new Date().toISOString();
+    writeFileSync(join(root, "state", "audit.jsonl"), lines.map(l => JSON.stringify({ ts, pid: 1, deadline_ms: 1_000, ...l })).join("\n") + "\n");
+  };
+  test("only an attempt that held a claim is a rival: a retry whose window holds just a withdrawn loser claims", () => {
+    // Z claimed and failed; Y read the log before Z's attempt, so it lost to Z and withdrew; X read Z's error, not Y.
+    seed([
+      { key: "k", status: "attempt", nonce: "z", seen: 0 },
+      { key: "k", status: "error", message: "upstream 500" },
+      { key: "k", status: "attempt", nonce: "y", seen: 0 },
+      { key: "k", status: "withdrawn", nonce: "y" },
+    ]);
+    expect(claimKey("k", { key: "k", status: "attempt" }, 2).claimed).toBe(true);
+  });
+  test("a loser that crashed before withdrawing, after a failed write, leaves the key failed, not unknown", () => {
+    seed([
+      { key: "k", status: "attempt", nonce: "a", seen: 0 },
+      { key: "k", status: "error", message: "upstream 500" },
+      { key: "k", status: "attempt", nonce: "l", seen: 0 }, // lost to a, crashed before its withdrawal
+    ]);
+    expect(keyState("k").state).toBe("error");
+    expect(unresolvedKeys()).toHaveLength(0);
+    expect(claimKey("k", { key: "k", status: "attempt" }).claimed).toBe(true);
+  });
+  test("an attempt from a log without seen counts as a claim when the key allowed a send", () => {
+    seed([{ key: "k", status: "attempt" }]);
+    expect(keyState("k").state).toBe("unknown");
+    expect(unresolvedKeys().map(e => e.key)).toEqual(["k"]);
   });
 });
