@@ -57,7 +57,9 @@ export function parsePolicy(text: string, path: string, transformsFile?: { text:
     };
   }
   const transforms: Record<string, string> = {};
-  const addTransforms = (source: string, table: Record<string, unknown> | undefined, hints?: string[]) => {
+  const addTransforms = (source: string, table: unknown, hints?: string[]) => {
+    if (table !== undefined && (table === null || typeof table !== "object" || Array.isArray(table)))
+      throw bad(source, `transforms must be a table of "connector:tool.param" = "format"`, hints);
     for (const [key, format] of Object.entries(table ?? {})) {
       if (!TIME_FORMATS.includes(String(format))) throw bad(source, `transforms."${key}" must be one of ${TIME_FORMATS.join(", ")}`, hints);
       const at = key.indexOf(":");
