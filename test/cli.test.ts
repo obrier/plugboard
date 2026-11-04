@@ -183,6 +183,7 @@ test("batch: per-line results, 429 backoff, auth fail-fast, writes refused, bad 
   expect(out[0]).toMatchObject({ ok: true, result: { matches: [{ user: "jose" }, { user: "ana" }] } });
   expect(out[1]).toMatchObject({ ok: true }); // two 429s, then success
   expect(out[2]).toMatchObject({ ok: false, error: { code: "AUTH_REQUIRED" } }); // gmail needs-auth: no call made
+  expect(out[2].error.help?.join(" ")).toContain("Reconnect it"); // its hint kept, as on any other failed line
   expect(out[3]).toMatchObject({ ok: false, error: { code: "POLICY_DENIED" } });
   expect(out[4]).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
   expect(out[5]).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
@@ -394,6 +395,25 @@ describe("batch --axi and full results on disk", () => {
     expect(readFileSync(path, "utf8")).toContain(long);
     expect((await run(["slack", "search-public", "--query", long, "--axi", "--full"])).stdout).not.toContain("full result:");
   });
+});
+
+test("a Claude Code it isn't allowed to start is explained as a permission problem, not a breaking update", async () => {
+  const blocked = join(root, "claude-not-executable");
+  writeFileSync(blocked, "#!/bin/sh\n");
+  const r = await run(["slack", "search-public", "--query", "x"], { env: { PLUGBOARD_CLAUDE: blocked } });
+  expect(r.code).toBe(10);
+  expect(r.stderr).toContain("sandbox");
+  expect(r.stderr).not.toContain("breaking update");
+});
+
+test("batch keeps the hints: a sandbox that blocks Claude Code says so on every line", async () => {
+  const blocked = join(root, "claude-not-executable-2");
+  writeFileSync(blocked, "#!/bin/sh\n");
+  const lines = ["a", "b"].map(q => JSON.stringify({ id: q, connector: "slack", tool: "search-public", args: { query: q } })).join("\n");
+  const r = await run(["batch", "--as", "gather"], { stdin: lines, env: { PLUGBOARD_CLAUDE: blocked } });
+  const out = r.stdout.trim().split("\n").map(l => JSON.parse(l));
+  expect(r.code).toBe(10);
+  for (const o of out) expect(o.error.help.join(" ")).toContain("sandbox");
 });
 
 test("doctor: a state folder it can't write doesn't fail the check; it says so", async () => {

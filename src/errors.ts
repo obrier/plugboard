@@ -1,4 +1,6 @@
 import { AxiError } from "axi-sdk-js";
+import { DiscoveryTimeoutError } from "./bridge/client";
+import { cacheDir, collapseHome, stateDir } from "./platform";
 
 export const EXIT = {
   OK: 0, UPSTREAM_ERROR: 1, TIMEOUT: 1, UNKNOWN: 1, VALIDATION_ERROR: 2, NOT_FOUND: 2,
@@ -20,6 +22,31 @@ const TABLE: [Code, RegExp][] = [
 
 export function classify(message: string): Code {
   return TABLE.find(([, pattern]) => pattern.test(message))?.[0] ?? "UPSTREAM_ERROR";
+}
+
+// An agent's sandbox (Codex's, for one) blocks writes outside its workspace and the network by default.
+const PERMISSION = /\b(EPERM|EACCES)\b|operation not permitted|permission denied/i;
+/** What an agent's sandbox must allow, with a link that works without the repo. */
+export const SANDBOX_HINT_URL = "https://github.com/obrier/plugboard/blob/main/docs/harness-guides.md#sandboxes";
+export const sandboxHint = () => `If an agent's sandbox runs this (Codex, for one), allow network access and writes to the temp folder, ${collapseHome(stateDir())} and ${collapseHome(cacheDir())}: ${SANDBOX_HINT_URL}`;
+export const isPermissionError = (message: string) => PERMISSION.test(message);
+
+/** Every error as plugboard reports it, with a code and hints. The one place unknown errors get explained:
+ * the CLI, batch and doctor all go through it. */
+export function asAxiError(error: unknown, fallback: Code = "UNKNOWN"): AxiError {
+  if (error instanceof AxiError) return error;
+  if (error instanceof DiscoveryTimeoutError) {
+    const pending = error.servers.filter(s => s.status === "pending").map(s => s.name);
+    return error.servers.length
+      ? fail("BRIDGE_BROKEN", `Timed out waiting for connector discovery; still pending: ${pending.join(", ") || "none"}`, ["Run `plugboard doctor` for details"])
+      : fail("BRIDGE_BROKEN", "Claude Code listed no connectors in time: it can't reach claude.ai, or isn't logged in", [sandboxHint(), "Run `plugboard doctor` for details"]);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  // The table above reads the bridge's and connectors' text, before the caller's fallback; a local system error
+  // (Node's, with an errno code and a syscall) skips it, as its path or wording can look like a 403 or a quota.
+  const local = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string" && "syscall" in error;
+  const known = local ? "UPSTREAM_ERROR" : classify(message);
+  return fail(known === "UPSTREAM_ERROR" ? fallback : known, message, isPermissionError(message) ? [sandboxHint()] : []);
 }
 
 export const retryable = (code: Code) => code === "RATE_LIMITED" || code === "TIMEOUT";

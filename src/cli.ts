@@ -6,7 +6,7 @@ import { batchCommand } from "./batch";
 import { loadIndex, loadManifest, manifestIds, refresh, shortName } from "./cache";
 import { BIN, runTool } from "./call";
 import { doctor, lastDoctor } from "./doctor";
-import { EXIT, exitFor, fail } from "./errors";
+import { asAxiError, EXIT, exitFor, fail } from "./errors";
 import { summaryOf } from "./flags";
 import { mode, plainText } from "./output";
 import { loadUsage, scanUsage } from "./usage";
@@ -179,7 +179,7 @@ let errorsOnStdout = mode.axi;
 
 /** Errors: AXI shape on stdout with --axi (unless an explicit --out asked for another format); otherwise `error: … (CODE)` and hints on stderr. */
 function reportError(error: unknown): number {
-  const e = error instanceof AxiError ? error : new AxiError(error instanceof Error ? error.message : String(error), "UNKNOWN");
+  const e = asAxiError(error);
   if (errorsOnStdout) process.stdout.write(`${renderError(e.message, e.code, e.suggestions)}\n`);
   else process.stderr.write(`error: ${e.message} (${e.code})\n${e.suggestions.map(h => `hint: ${h}\n`).join("")}`);
   return exitFor(e);

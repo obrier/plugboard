@@ -3,7 +3,9 @@ import { AxiError } from "axi-sdk-js";
 import { keyState } from "../src/audit";
 import { mergeCapture, shortName, findTool, type Manifest } from "../src/cache";
 import { applyTransforms, canonical, payloadHash, refOf, timeParams } from "../src/call";
-import { classify as classifyError } from "../src/errors";
+import { asAxiError, classify as classifyError } from "../src/errors";
+import { cacheDir, collapseHome } from "../src/platform";
+import { DiscoveryTimeoutError } from "../src/bridge/client";
 import { mergeArgs, parseFlags, toolHelp } from "../src/flags";
 import { fileOf, markdownOf, render, shape, unwrap } from "../src/output";
 import { axiSummary } from "../src/batch";
@@ -271,6 +273,27 @@ describe("output", () => {
 });
 
 describe("errors, time, cache", () => {
+  test("a blocked sandbox reads as what it is, not a broken bridge or an unknown error", () => {
+    const none = asAxiError(new DiscoveryTimeoutError([]));
+    expect(none.code).toBe("BRIDGE_BROKEN");
+    expect(none.message).toContain("listed no connectors");
+    expect(none.suggestions.join(" ")).toContain("sandbox");
+    const pending = asAxiError(new DiscoveryTimeoutError([{ name: "claude.ai Slack", status: "pending", tools: [] }]));
+    expect(pending.message).toContain("claude.ai Slack");
+    const perm = asAxiError(Object.assign(new Error("EPERM: operation not permitted, open '/x/doctor.json'"), { code: "EPERM" }));
+    expect(perm.suggestions.join(" ")).toContain("sandbox");
+    expect(asAxiError(new Error("boom")).code).toBe("UNKNOWN");
+    expect(asAxiError(new Error("boom"), "UPSTREAM_ERROR").code).toBe("UPSTREAM_ERROR");
+    expect(asAxiError(new Error("Claude Code closed stdout")).code).toBe("BRIDGE_BROKEN"); // the classify table still applies
+    // A local file error is never read as the connector table: its path or wording can look like an auth or rate limit
+    const sys = (message: string, code: string) => Object.assign(new Error(message), { code, syscall: "open" });
+    expect(asAxiError(sys("EDQUOT: disk quota exceeded, write", "EDQUOT")).code).toBe("UNKNOWN");
+    expect(asAxiError(sys("ENOENT: no such file or directory, open '/srv/403/policy.toml'", "ENOENT")).code).toBe("UNKNOWN");
+    const upstream = new AxiError("Slack: permission denied for channel", "UPSTREAM_ERROR");
+    expect(asAxiError(upstream)).toBe(upstream); // a connector's own text never gets the sandbox hint
+    expect(perm.suggestions.join(" ")).toContain("harness-guides.md#sandboxes"); // a link that works without the repo
+    expect(perm.suggestions.join(" ")).toContain(collapseHome(cacheDir())); // refresh and a first call write the cache
+  });
   test("error classification table", () => {
     expect(classifyError("invalid_auth")).toBe("AUTH_REQUIRED");
     expect(classifyError("Connector needs authentication")).toBe("AUTH_REQUIRED");

@@ -1,6 +1,6 @@
 import { ClaudeConnectors } from "./bridge/client";
 import { childEnv } from "./bridge/capture";
-import { fail } from "./errors";
+import { asAxiError, fail, isPermissionError } from "./errors";
 import { findClaude } from "./platform";
 import type { Policy } from "./policy";
 
@@ -27,7 +27,11 @@ export async function connect(policy: Policy) {
   try {
     return await ClaudeConnectors.connect({ claudePath: path });
   } catch (error) {
-    throw fail("BRIDGE_BROKEN", `Claude Code control protocol failed (${path}): ${(error as Error).message}`, [
+    const e = asAxiError(error, "BRIDGE_BROKEN");
+    // Not allowed to start it or make its temp folder: an environment problem, not a broken protocol.
+    if (isPermissionError(e.message)) throw fail("BRIDGE_BROKEN", `Couldn't start Claude Code (${path}): ${e.message}`, [...e.suggestions, "Run `plugboard doctor` for details"]);
+    const message = e.message;
+    throw fail("BRIDGE_BROKEN", `Claude Code control protocol failed (${path}): ${message}`, [
       "Run `plugboard doctor` for details",
       "After a breaking update, set claude_path in policy.toml to an earlier Claude Code version (`plugboard doctor` names it)",
     ]);
