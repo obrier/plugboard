@@ -20,15 +20,16 @@ export const TIME_FORMATS = ["unix", "unix-ms", "rfc3339", "date"];
 export const DEFAULT_ALIASES: Record<string, string> = DEFAULTS.aliases;
 const DEFAULT_PROFILE: Profile = { mode: "read", allow: ["*:*"], deny: [], allowDestructive: false, allowInAgent: false };
 
-const bad = (path: string, message: string) => fail("VALIDATION_ERROR", `policy ${path}: ${message}`, [`Edit ${path}`]);
+/** A config error names its file, so policy.toml and transforms.toml are told apart. */
+const bad = (path: string, message: string, hints = [`Edit ${path}`]) => fail("VALIDATION_ERROR", `${path}: ${message}`, hints);
 const strings = (path: string, key: string, value: unknown): string[] => {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some(v => typeof v !== "string")) throw bad(path, `${key} must be a list of strings`);
   return value as string[];
 };
 
-const parseToml = (text: string, path: string) => {
-  try { return Bun.TOML.parse(text) as Record<string, any>; } catch (error) { throw bad(path, (error as Error).message); }
+const parseToml = (text: string, path: string, hints?: string[]) => {
+  try { return Bun.TOML.parse(text) as Record<string, any>; } catch (error) { throw bad(path, (error as Error).message, hints); }
 };
 
 /** Built-ins, then transforms.toml (its [transforms] only: it can never grant a profile), then policy.toml. */
@@ -56,15 +57,19 @@ export function parsePolicy(text: string, path: string, transformsFile?: { text:
     };
   }
   const transforms: Record<string, string> = {};
-  const addTransforms = (source: string, table: Record<string, unknown> | undefined) => {
+  const addTransforms = (source: string, table: Record<string, unknown> | undefined, hints?: string[]) => {
     for (const [key, format] of Object.entries(table ?? {})) {
-      if (!TIME_FORMATS.includes(String(format))) throw bad(source, `transforms."${key}" must be one of ${TIME_FORMATS.join(", ")}`);
+      if (!TIME_FORMATS.includes(String(format))) throw bad(source, `transforms."${key}" must be one of ${TIME_FORMATS.join(", ")}`, hints);
       const at = key.indexOf(":");
       transforms[at > 0 ? `${resolve(key.slice(0, at))}${key.slice(at)}` : key] = String(format);
     }
   };
   addTransforms("built-in defaults", DEFAULTS.transforms);
-  if (transformsFile) addTransforms(transformsFile.path, parseToml(transformsFile.text, transformsFile.path).transforms);
+  if (transformsFile) {
+    // Every command reads this file, so a bad line stops them all: say how to get going again.
+    const hints = [`Fix or remove the bad line in ${transformsFile.path}; it holds only time transforms`];
+    addTransforms(transformsFile.path, parseToml(transformsFile.text, transformsFile.path, hints).transforms, hints);
+  }
   addTransforms(path, raw.transforms);
   return {
     source: path,
