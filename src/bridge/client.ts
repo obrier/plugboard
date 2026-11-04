@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { findClaude } from "../platform";
 import { join } from "node:path";
 import { captureConnectorSchemas, childEnv } from "./capture";
+import { setTimeout as sleep } from "node:timers/promises";
+import { runtime as detected, type Proc, type Runtime } from "../runtime";
 import type { ToolSchema } from "./capture";
 
 export type ToolMetadata = {
@@ -33,6 +35,8 @@ export type ClientOptions = {
   requestTimeoutMs?: number;
   discoveryTimeoutMs?: number;
   schemaTimeoutMs?: number;
+  /** Bun's or Node's process and server APIs; detected unless given (tests run both). */
+  runtime?: Runtime;
 };
 export type ControlRequest = { subtype: string; [key: string]: unknown };
 
@@ -54,17 +58,17 @@ function positiveTimeout(value: number) {
   if (!Number.isFinite(value) || value <= 0) throw new Error("Timeout must be a positive finite number");
   return value;
 }
-function spawnClaude(path: string, cwd: string) {
-  return Bun.spawn([
+function spawnClaude(runtime: Runtime, path: string, cwd: string): Promise<Proc> {
+  return runtime.spawn([
     path, "--print", "--verbose",
     "--input-format", "stream-json", "--output-format", "stream-json",
     "--no-session-persistence", "--setting-sources", "",
     "--settings", '{"disableAllHooks":true}', "--tools", "",
     "--permission-mode", "dontAsk", "--no-chrome",
-  ], { cwd, env: childEnv(), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  ], { cwd, env: childEnv() });
 }
 
-/** Bun client for Claude Code's internal control protocol (tested on 2.1.263).
+/** Client for Claude Code's internal control protocol (tested on 2.1.263).
  * Connects using Claude Code's existing login. Sends control messages only.
  */
 export class ClaudeConnectors {
@@ -79,10 +83,10 @@ export class ClaudeConnectors {
   private schemaCapture?: Promise<Map<string, ToolSchema>>;
 
   private constructor(
-    private readonly proc: ReturnType<typeof spawnClaude>,
+    private readonly proc: Proc,
     private readonly requestTimeoutMs: number,
     private readonly discoveryTimeoutMs: number,
-    private readonly schemaOptions: { claudePath: string; cwd: string; timeoutMs: number; discoveryTimeoutMs: number },
+    private readonly schemaOptions: { claudePath: string; cwd: string; timeoutMs: number; discoveryTimeoutMs: number; runtime: Runtime },
     private readonly ownedDirectory?: string,
   ) {
     this.reading = this.readStdout();
@@ -103,9 +107,10 @@ export class ClaudeConnectors {
       // used by the original probe instead of an older npm-installed binary.
       const claudePath = options.claudePath ?? findClaude();
       const cwd = options.cwd ?? ownedDirectory!;
-      const proc = spawnClaude(claudePath, cwd);
+      const runtime = options.runtime ?? detected;
+      const proc = await spawnClaude(runtime, claudePath, cwd);
       client = new ClaudeConnectors(proc, timeout, discoveryTimeout,
-        { claudePath, cwd, timeoutMs: schemaTimeout, discoveryTimeoutMs: discoveryTimeout }, ownedDirectory);
+        { claudePath, cwd, timeoutMs: schemaTimeout, discoveryTimeoutMs: discoveryTimeout, runtime }, ownedDirectory);
       await client.request({ subtype: "initialize" });
       return client;
     } catch (error) {
@@ -181,7 +186,7 @@ export class ClaudeConnectors {
       const settled = servers.length > 0 && !servers.some(server => server.status === "pending");
       if (settled) return servers;
       if (names?.length && names.every(name => servers.some(server => server.name === name && server.status !== "pending"))) return servers;
-      await Bun.sleep(Math.min(200, Math.max(0, deadline - Date.now())));
+      await sleep(Math.min(200, Math.max(0, deadline - Date.now())));
     }
   }
 
