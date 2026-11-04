@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { captureConnectorSchemas } from "./bridge/capture";
 import type { ConnectorServer } from "./bridge/client";
 import { claudePath, claudeVersion, connect } from "./claude";
-import { fail } from "./errors";
-import { cacheDir } from "./platform";
+import { asAxiError, fail } from "./errors";
+import { cacheDir, writeJson } from "./platform";
 import type { Policy } from "./policy";
 
 export type Annotations = { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
@@ -30,11 +30,6 @@ export function annotationsOf(tool: ConnectorServer["tools"][number]): Annotatio
   };
 }
 
-function writeJson(path: string, value: unknown) {
-  mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(`${path}.tmp`, JSON.stringify(value));
-  renameSync(`${path}.tmp`, path); // atomic: a reader never sees half a manifest
-}
 const readJson = <T>(path: string): T | undefined => (existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined);
 
 export const loadIndex = () => readJson<CacheIndex>(join(cacheDir(), "index.json"));
@@ -114,7 +109,8 @@ export async function refresh(policy: Policy, only?: string[]): Promise<RefreshR
     const [servers, capture] = await Promise.all([
       client.waitForServers(),
       captureConnectorSchemas({ claudePath: claudePath(policy) }).catch(error => {
-        throw fail("BRIDGE_BROKEN", `Schema capture failed: ${(error as Error).message}`, ["Run `plugboard doctor`"]);
+        const e = asAxiError(error, "BRIDGE_BROKEN"); // a sandbox blocking capture's own temp folder gets its hint
+        throw fail("BRIDGE_BROKEN", `Schema capture failed: ${e.message}`, [...e.suggestions, "Run `plugboard doctor`"]);
       }),
     ]);
     const { index, manifests, result } = mergeCapture(loadIndex(), servers, capture.schemas, only);

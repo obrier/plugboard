@@ -3,7 +3,7 @@ import { encode } from "@toon-format/toon";
 import { AxiError } from "axi-sdk-js";
 import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
-import { EXIT, fail, retryAfterMs, type Code } from "./errors";
+import { asAxiError, EXIT, fail, retryAfterMs, type Code } from "./errors";
 import { invoke, parseDeadline, prepare, profileName, requireConnected, requireManifest, requireTool, type Prepared } from "./call";
 import { fileOf, itemCount, parseList, shape, unwrap } from "./output";
 import { newRun, writePrivate } from "./results";
@@ -11,12 +11,14 @@ import { decide, loadPolicy } from "./policy";
 
 type Line = { id?: unknown; connector?: unknown; tool?: unknown; args?: unknown; select?: unknown; where?: unknown; items?: unknown; deadline?: unknown };
 type Task = { id: unknown; index: number; p: Prepared; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
-export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: { code: Code; message: string; retryable: boolean; attempts?: number } };
+type Failure = { code: Code; message: string; help?: string[] };
+export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: Failure & { retryable: boolean; attempts?: number } };
 
-const errorOf = (error: unknown) => ({
-  code: (error instanceof AxiError ? error.code : "UPSTREAM_ERROR") as Code,
-  message: error instanceof Error ? error.message : String(error),
-});
+/** An error as a batch line reports it, its hints kept. */
+const errorOf = (error: unknown): Failure => {
+  const e = asAxiError(error, "UPSTREAM_ERROR");
+  return { code: e.code as Code, message: e.message, ...(e.suggestions.length ? { help: e.suggestions } : {}) };
+};
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export type BatchOptions = { profile: string; concurrency: number; perConnector: number; ordered: boolean; budgetMs: number };
@@ -59,20 +61,20 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
   });
   if (!tasks.length) return lines.length && failed ? EXIT.PARTIAL : EXIT.OK;
 
-  const failAll = (list: Task[], code: Code, message: string) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { code, message, retryable: false } }); };
+  const failAll = (list: Task[], failure: Failure) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { ...failure, retryable: false } }); };
   let client: Client;
-  try { client = await makeClient(); } catch (error) { failAll(tasks, "BRIDGE_BROKEN", errorOf(error).message); return EXIT.BRIDGE_BROKEN; }
+  try { client = await makeClient(); } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
   let broken = false;
   try {
     const names = [...new Set(tasks.map(t => t.p.manifest.connectorName))];
-    const blind = new Map<string, string>(); // connector name → reason: the rest of its lines fail fast
+    const blind = new Map<string, Failure>(); // connector name → its failure, hints kept: the rest of its lines fail fast
     try {
       const servers = await client.waitForServers(names);
       for (const t of tasks) if (!blind.has(t.p.manifest.connectorName)) {
-        try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error).message); }
+        try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error)); }
       }
-    } catch (error) { failAll(tasks, "BRIDGE_BROKEN", errorOf(error).message); return EXIT.BRIDGE_BROKEN; }
+    } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
     const queue = [...tasks];
     const active = new Map<string, number>();
@@ -81,12 +83,12 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
     const budgetEnd = Date.now() + o.budgetMs;
     await new Promise<void>(resolve => {
       const pump = () => {
-        if (broken) failAll(queue, "BRIDGE_BROKEN", "Bridge failed during the batch");
-        if (Date.now() > budgetEnd) failAll(queue, "TIMEOUT", "Batch budget exceeded");
+        if (broken) failAll(queue, { code: "BRIDGE_BROKEN", message: "Bridge failed during the batch" });
+        if (Date.now() > budgetEnd) failAll(queue, { code: "TIMEOUT", message: "Batch budget exceeded" });
         for (let i = 0; i < queue.length && running < o.concurrency; i++) {
           const t = queue[i]!;
           const name = t.p.manifest.connectorName;
-          if (blind.has(name)) { queue.splice(i--, 1); done(t.index, { id: t.id, ok: false, error: { code: "AUTH_REQUIRED", message: blind.get(name)!, retryable: false } }); continue; }
+          if (blind.has(name)) { queue.splice(i--, 1); done(t.index, { id: t.id, ok: false, error: { ...blind.get(name)!, code: "AUTH_REQUIRED", retryable: false } }); continue; }
           if ((active.get(name) ?? 0) >= (caps.get(name) ?? o.perConnector)) continue;
           queue.splice(i--, 1);
           running++;
@@ -105,7 +107,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
           const e = errorOf(error);
           const name = t.p.manifest.connectorName;
           if (e.code === "BRIDGE_BROKEN") broken = true;
-          if (e.code === "AUTH_REQUIRED") blind.set(name, e.message);
+          if (e.code === "AUTH_REQUIRED") blind.set(name, e);
           const again = (e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2);
           if (again && !broken) {
             if (e.code === "RATE_LIMITED") {
@@ -183,6 +185,7 @@ export function axiSummary(outs: Out[], inline?: string) {
     ...head,
     ...(inlined.length ? { inline: Object.fromEntries(inlined) } : {}),
     help: [
+      ...new Set(outs.flatMap(o => o.error?.help ?? [])), // what failed lines say to do, once each
       ...(writeError ? [`Some results were not written to disk (${writeError}): they are inline in full`] : []),
       ...(skipped ? [`${skipped} result(s) not inlined (${tokens(skippedChars)} tokens): read the files you need`] : []),
       ...(dir ? [`grep -l <word> "${dir}"/* finds a word across results; files are private and removed after a day`] : []),

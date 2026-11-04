@@ -1,9 +1,23 @@
 // Everything that differs between macOS, Linux, WSL and Windows lives here.
 // Each function takes a context (platform, env, home, file checks) so tests can
 // exercise every platform from any machine; callers use the real one by default.
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { posix, win32 } from "node:path";
+import { dirname, posix, win32 } from "node:path";
+
+/** Saves a record of a result a command already has (doctor's last run, usage counts). Best effort: a folder
+ * it can't write, as in an agent's sandbox, must not fail the command. Returns why it wasn't saved, if it wasn't. */
+export function saveRecord(path: string, write: () => void = () => {}): string | undefined {
+  try { write(); return undefined; } catch (error) { return `${path}: ${(error as Error).message}`; }
+}
+/** Plugboard's one JSON writer: to a temp file, then renamed, so a reader never sees half a file. */
+export function writeJson(path: string, value: unknown) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`; // unique: two writers never share one
+  try { writeFileSync(tmp, JSON.stringify(value)); renameSync(tmp, path); }
+  catch (error) { rmSync(tmp, { force: true }); throw error; }
+}
+export const saveJson = (path: string, value: unknown) => saveRecord(path, () => writeJson(path, value));
 
 export type Ctx = {
   platform: NodeJS.Platform;
