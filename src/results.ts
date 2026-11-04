@@ -20,6 +20,6 @@ export function newRun(prefix: "b" | "r"): string {
 /** Writes one result file (0600) and returns its path. */
 export function writePrivate(dir: string, name: string, text: string): string {
   const path = join(dir, name);
-  writeFileSync(path, text, { mode: 0o600 });
+  writeFileSync(path, text, { mode: 0o600, flag: "wx" }); // never over another result
   return path;
 }
