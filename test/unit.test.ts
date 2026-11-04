@@ -162,6 +162,14 @@ describe("transforms", () => {
     expect(p.aliases.x).toBeUndefined();
     expect(code(() => parsePolicy("", "p", { text: "[transforms]\n'a:b.c' = 'weekday'", path: "t" }))).toBe("VALIDATION_ERROR");
   });
+  test("policy TOML: 1.1 syntax loads on both runtimes, and a syntax error is one line with its position", () => {
+    const p = parsePolicy(`[profiles]\ngather = {\n  mode = "read",\n  allow = ["slack:*"],\n}\n`, "/c/policy.toml");
+    expect(Object.keys(p.profiles).sort()).toEqual(["default", "gather"]);
+    let message = "";
+    try { parsePolicy("[profiles\n", "/c/policy.toml"); } catch (error) { message = (error as Error).message; }
+    expect(message).toBe("/c/policy.toml: line 1, column 10: illegal character in key");
+  });
+
   test("a bad transforms.toml stops the command with an error naming that file, not the policy", () => {
     const errorOf = (fn: () => unknown) => { try { fn(); } catch (e) { return e as AxiError; } throw new Error("no error"); };
     for (const text of ["[transforms]\n'a:b.c' = 'weekday'", "[transforms]\n'a:b.c' = \n"]) {

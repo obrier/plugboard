@@ -1,6 +1,6 @@
 // Live smoke test of the runtime seam: the bridge, a read, the cost guard and a schema capture, timed.
 // Under Bun:  bun scripts/node-smoke.ts [connector] [tool] [json args]
-// Under Node: bun build scripts/node-smoke.ts --target=node --outfile=/tmp/smoke.mjs && node /tmp/smoke.mjs …
+// Under Node: bun build scripts/node-smoke.ts --target=node --outfile=dist/node-smoke.mjs && node dist/node-smoke.mjs …
 // The capture writes to a temporary cache, never the real one. Read tools only.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +15,7 @@ const { loadManifest, refresh } = await import("../src/cache");
 const { findTool } = await import("../src/cache");
 const { invoke, prepare } = await import("../src/call");
 
-const runtime = process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`;
+const { runtime: { name: runtime } } = await import("../src/runtime");
 const ms = (t: number) => `${Math.round(performance.now() - t)} ms`;
 const policy = loadPolicy();
 const manifest = loadManifest(connector);

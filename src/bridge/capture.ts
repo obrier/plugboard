@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { findClaude } from "../platform";
 import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { runtime, type Proc } from "../runtime";
+import { runtime as detected, type Proc, type Runtime } from "../runtime";
 import { join } from "node:path";
 
 export type ToolSchema = {
@@ -39,6 +39,7 @@ export type SchemaCaptureOptions = {
   timeoutMs?: number;
   discoveryTimeoutMs?: number;
   signal?: AbortSignal;
+  runtime?: Runtime;
 };
 
 export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}) {
@@ -52,6 +53,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
   const requests: { method: string; path: string; connectorTools: number }[] = [];
   let schemas: ToolSchema[] = [];
   const rejection = "Local schema capture only; no model is available.";
+  const runtime = options.runtime ?? detected;
   const server = await (async () => { try { return await runtime.serve(
     async request => {
       // Never retain headers, messages, system prompts, or account metadata.
@@ -101,7 +103,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
     };
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"])
       delete env[key];
-    proc = runtime.spawn([
+    proc = await runtime.spawn([
       options.claudePath ?? findClaude(),
       "--print", "--verbose", "--output-format", "stream-json",
       "--input-format", "stream-json",
@@ -199,7 +201,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
     return { schemas, verification: {
       toolCount: schemas.length, requests, modelEndpoint: "loopback (no forwarding)",
       totalCostUsd: result.total_cost_usd, inputTokens: result.usage.input_tokens,
-      outputTokens: result.usage.output_tokens, runtime: process.versions.bun ? `bun ${process.versions.bun}` : `node ${process.versions.node}`,
+      outputTokens: result.usage.output_tokens, runtime: runtime.name,
     } };
   } catch (error) {
     options.signal?.throwIfAborted();

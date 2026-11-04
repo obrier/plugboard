@@ -20,6 +20,11 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test # offline: the CLI tests drive test/fixtures/fake-claude.ts, never a real account
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # the library's oldest supported Node
+      - name: The bridge on real Node (offline, against the fake Claude Code)
+        run: bun build scripts/node-bridge-check.ts --target=node --outfile=dist/node-bridge-check.mjs && node dist/node-bridge-check.mjs
 
   # Ubuntu on WSL2, on a hosted Windows runner: the test suite, then the compiled linux-x64 binary,
   # including a planted Windows claude.exe on PATH that plugboard must refuse to use.
