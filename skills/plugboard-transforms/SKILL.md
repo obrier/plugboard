@@ -24,8 +24,9 @@ Plugboard already has built-in transforms, and converts parameters whose schema 
 4. Test each candidate before writing it. Put the line in a scratch file and point Plugboard at it:
 
    ```bash
-   printf '[transforms]\n"<connector>:<tool>.<param>" = "<format>"\n' > /tmp/pb-transforms.toml
-   PLUGBOARD_TRANSFORMS=/tmp/pb-transforms.toml plugboard <connector> <tool> --<param> -1d <required flags> --out json
+   T=$(mktemp)
+   printf '[transforms]\n"<connector>:<tool>.<param>" = "<format>"\n' > "$T"
+   PLUGBOARD_TRANSFORMS="$T" plugboard <connector> <tool> --<param> -1d <required flags> --out json
    ```
 
    Keep the line if the call exits 0 and the result respects the time (for example, nothing older than the bound). If the connector rejects the value, try the next plausible format. If none works, leave the parameter out and say so.

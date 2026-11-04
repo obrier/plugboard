@@ -165,6 +165,23 @@ describe("transforms", () => {
     expect(timeParams(p, "slack", tool)).toEqual(["afterTs"]);
     expect(applyTransforms(p, "slack", tool, { afterTs: "2026-11-03" }).afterTs).toBe("2026-11-03");
   });
+  test("a value already in the target format passes through; relative input converts", () => {
+    const tool = { name: "list", sourceName: "s", annotations: { readOnlyHint: true },
+      inputSchema: { type: "object", properties: { at: { type: "string" }, day: { type: "string" }, ts: { type: "string" }, ms: { type: "string" } } } };
+    const p = parsePolicy("", "p", { text: `[transforms]\n"c:list.at" = "rfc3339"\n"c:list.day" = "date"\n"c:list.ts" = "unix"\n"c:list.ms" = "unix-ms"`, path: "t" });
+    for (const at of ["2026-11-03T10:00:00.500Z", "2026-11-03T10:00:00", "2026-11-03T10:00:00+05:30"])
+      expect(applyTransforms(p, "c", tool, { at }).at).toBe(at);
+    expect(applyTransforms(p, "c", tool, { day: "2026-11-03", ts: "1793704741.123456", ms: "1793704741000" }))
+      .toEqual({ day: "2026-11-03", ts: "1793704741.123456", ms: "1793704741000" });
+    expect(applyTransforms(p, "c", tool, { at: "-1d" }).at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+    expect(applyTransforms(p, "c", tool, { ts: "2026-11-03" }).ts).toMatch(/^\d{10}$/);
+  });
+  test("a write tool is never converted, even with a rule, and its help claims nothing", () => {
+    const tool = { name: "send", sourceName: "s", inputSchema: { type: "object", properties: { message: { type: "string" }, at: { type: "string", format: "date-time" } } } };
+    const p = parsePolicy("", "p", { text: `[transforms]\n"c:send.message" = "unix"`, path: "t" });
+    expect(applyTransforms(p, "c", tool, { message: "-1d", at: "today" })).toEqual({ message: "-1d", at: "today" });
+    expect(timeParams(p, "c", tool)).toEqual([]);
+  });
   test("a read parameter whose schema declares format date-time or date converts without a rule", () => {
     const tool = (annotations?: Record<string, boolean>) => ({ name: "list", sourceName: "s", annotations,
       inputSchema: { type: "object", properties: { at: { type: "string", format: "date-time" }, day: { type: "string", format: "date" }, q: { type: "string" } } } });

@@ -29,6 +29,15 @@ function rfc3339(d: Date) {
     + `${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
 }
 
+/** Already in the target format: sent as given, so a valid value never loses precision or gains an offset. */
+const FORMAT_PATTERNS: Record<string, RegExp> = {
+  rfc3339: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/i,
+  date: /^\d{4}-\d{2}-\d{2}$/,
+  unix: /^\d{9,10}(\.\d+)?$/,
+  "unix-ms": /^\d{12,13}$/,
+};
+export const inFormat = (value: string, format: string) => FORMAT_PATTERNS[format]?.test(value.trim()) ?? false;
+
 export function formatTime(d: Date, format: string): string | number {
   switch (format) {
     case "unix": return Math.floor(d.getTime() / 1000);
