@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fail } from "./errors";
-import { expandHome } from "./paths";
+import { expandHome } from "./platform";
 
 type Schema = Record<string, any>;
 

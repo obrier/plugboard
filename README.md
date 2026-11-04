@@ -32,9 +32,26 @@ Plugboard fixes four things:
 
 ## Requirements
 
-- macOS or Linux.
+- macOS, Linux, or Windows through WSL2 (x64 or arm64).
 - [Claude Code](https://code.claude.com), installed and logged in with a claude.ai account (`claude /login`).
 - The connectors you want, connected in claude.ai → Settings → Connectors.
+
+### Platforms
+
+| Platform | Status |
+|---|---|
+| macOS (arm64, x64) | Supported; tested in CI |
+| Linux (x64, arm64) | Supported; tested in CI |
+| Windows through WSL2 | Supported; tested in CI on Ubuntu under WSL2. Install Plugboard **and Claude Code inside WSL**: a Windows Claude Code is a separate install with its own login, and Plugboard never uses it. Agents running on the Windows side can call it with `wsl plugboard …` |
+| Native Windows | Not yet |
+
+Plugboard finds Claude Code in this order:
+1. `PLUGBOARD_CLAUDE`;
+2. `claude_path` in the policy;
+3. the native installer's `~/.local/bin/claude`;
+4. `PATH`.
+
+It keeps its files in the XDG locations, `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME` and `$XDG_STATE_HOME`, which default to `~/.config`, `~/.cache` and `~/.local/state`. It reads Claude Code transcripts from `$CLAUDE_CONFIG_DIR`, by default `~/.claude`.
 
 ## Install
 

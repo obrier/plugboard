@@ -8,7 +8,7 @@ import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveI
 import { BIN, invoke, prepare, profileName } from "./call";
 import { authStatus, claudePath, claudeVersion, connect, costGuard } from "./claude";
 import { EXIT } from "./errors";
-import { collapseHome, stateDir } from "./paths";
+import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, stateDir, windowsClaudeFromWSL } from "./platform";
 import { classify, loadPolicy, matches, profileFor, type Policy, type Profile } from "./policy";
 
 type Status = "ok" | "warn" | "fail" | "info";
@@ -48,16 +48,26 @@ export async function doctor(argv: string[]) {
     if (remedy && status !== "ok" && status !== "info") help.push(remedy);
   };
 
+  // 0: platform, and plugboard's own directories (WSL: not on the Windows drive)
+  const onC = [cacheDir(), stateDir(), policyPath()].filter(dir => onWindowsDrive(dir));
+  add("platform", onC.length ? "warn" : "ok", platformLabel() + (onC.length ? `; on the Windows drive (slow, file modes ignored): ${onC.join(", ")}` : ""),
+    "Keep PLUGBOARD_CACHE, PLUGBOARD_STATE and PLUGBOARD_POLICY inside the Linux home");
+
   // 1–3: binary, version, login (no protocol needed)
   const path = claudePath(policy);
   const version = existsSync(path) ? claudeVersion(path) : undefined;
-  add("binary", version ? "ok" : "fail", version ? collapseHome(path) : `${collapseHome(path)} missing or not runnable`, "Install Claude Code, or set claude_path in policy.toml");
+  const windowsClaude = version ? undefined : windowsClaudeFromWSL();
+  add("binary", version ? "ok" : "fail", version ? collapseHome(path) : `${collapseHome(path)} missing or not runnable`
+    + (windowsClaude ? `; found Windows' ${windowsClaude}, which is a separate install with its own login` : ""),
+    windowsClaude ? "Install Claude Code inside WSL (curl -fsSL https://claude.ai/install.sh | bash), then `claude` and /login"
+      : "Install Claude Code, or set claude_path in policy.toml");
   const index = loadIndex();
   const tested = index?.testedVersions ?? [];
   const lastGood = tested.at(-1);
+  const versions = version ? claudeVersionsDir(path) : undefined; // where the native installer keeps old versions
   if (version) add("version", tested.includes(version) ? "ok" : "warn", tested.includes(version) ? `${version} (tested)` : `${version} untested; checks below decide`,
-    lastGood ? `Last good: ${lastGood}; to roll back set claude_path = "~/.local/share/claude/versions/${lastGood}"` : undefined);
-  if (lastGood && !existsSync(join(process.env.HOME ?? "", ".local/share/claude/versions", lastGood)))
+    lastGood && versions ? `Last good: ${lastGood}; to roll back set claude_path = "${collapseHome(join(versions, lastGood))}"` : undefined);
+  if (lastGood && versions && !existsSync(join(versions, lastGood)))
     add("rollback", "warn", `last good version ${lastGood} is no longer on disk`);
   const auth = version ? authStatus(path) : undefined;
   add("login", auth?.loggedIn ? "ok" : "fail", auth ? (auth.loggedIn ? `logged in (${auth.method ?? "?"})` : "not logged in") : "auth status unavailable", "Run `claude` and /login");

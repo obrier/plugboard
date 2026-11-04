@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fail } from "./errors";
-import { expandHome, policyPath } from "./paths";
+import { expandHome, policyPath } from "./platform";
 import type { ManifestTool } from "./cache";
 
 export type Mode = "read" | "write";

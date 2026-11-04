@@ -2,7 +2,8 @@
 // The model endpoint is a loopback server which rejects every request.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
+import { findClaude } from "../platform";
 import { join } from "node:path";
 
 export type ToolSchema = {
@@ -96,7 +97,7 @@ export async function captureConnectorSchemas(options: SchemaCaptureOptions = {}
     for (const key of ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"])
       delete env[key];
     proc = Bun.spawn([
-      options.claudePath ?? join(homedir(), ".local/bin/claude"),
+      options.claudePath ?? findClaude(),
       "--print", "--verbose", "--output-format", "stream-json",
       "--input-format", "stream-json",
       "--no-session-persistence", "--setting-sources", "",

@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { stateDir } from "./paths";
+import { stateDir } from "./platform";
 
 export type AuditStatus = "attempt" | "ok" | "error" | "unknown" | "resolved-sent" | "resolved-not-sent" | "cost-guard";
 export type AuditEntry = { ts: string; key: string; status: AuditStatus; [field: string]: unknown };

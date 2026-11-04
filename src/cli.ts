@@ -56,7 +56,7 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   refresh: `usage: ${BIN} refresh [connector…]\n  Recaptures schemas (one capture, ~4 s) and replaces each connector that is connected; others keep their cached tools.\n`,
   policy: `usage: ${BIN} policy [--as <profile>] [<connector>]\n  Shows a profile's mode and what it may call; with a connector, lists its allowed tools.\n`,
-  usage: `usage: ${BIN} usage [--days 30] [--top 15]\n  Counts connector tool calls in ~/.claude/projects transcripts (actual tool_use blocks only) and saves them to the cache.\n  Listings then show the most-used tools first, capped at 20 (--all for the rest); find ranks used tools higher.\n`,
+  usage: `usage: ${BIN} usage [--days 30] [--top 15]\n  Counts connector tool calls in Claude Code transcripts (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects) (actual tool_use blocks only) and saves them to the cache.\n  Listings then show the most-used tools first, capped at 20 (--all for the rest); find ranks used tools higher.\n`,
   setup: `usage: ${BIN} setup hooks [--project] [--remove]\n  Opt-in: installs a session-start hook that prints the home view (cache only, no spawn) into Claude Code, Codex and OpenCode.\n  --project: this repository only. --remove: uninstall.\n`,
   audit: `usage: ${BIN} audit [--unresolved] [--since 1d] | audit resolve <write-key> --sent|--not-sent\n  The write log: one line per attempt and outcome, with payload hashes, never payloads.\n`,
 };
@@ -142,7 +142,7 @@ export function setupCommand(args: string[], options: { homeDir?: string; projec
   const identity = { marker: BIN, ...where, scope } as const;
   if (values.remove) uninstallSessionStartHooks(identity);
   // The hook runs `plugboard --axi`: agents get the AXI home view, humans keep plain output.
-  else installSessionStartHooks({ ...identity, execPath: `${Bun.which(BIN) ?? BIN} --axi`, binaryNames: [], shouldInstall: shouldInstall ?? (() => true) });
+  else installSessionStartHooks({ ...identity, execPath: `${Bun.which(BIN) ?? BIN} --axi` /* the library resolves this as a path: no quoting; Homebrew paths have no spaces */, binaryNames: [], shouldInstall: shouldInstall ?? (() => true) });
   const status = sessionStartHookStatus(identity);
   return {
     setup: values.remove ? "hooks removed" : "hooks installed or already up to date", scope,

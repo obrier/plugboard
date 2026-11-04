@@ -1,5 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
+import { findClaude } from "../platform";
 import { join } from "node:path";
 import { captureConnectorSchemas, childEnv } from "./capture";
 import type { ToolSchema } from "./capture";
@@ -100,7 +101,7 @@ export class ClaudeConnectors {
     try {
       // Bun run prepends node_modules/.bin to PATH; prefer the native install
       // used by the original probe instead of an older npm-installed binary.
-      const claudePath = options.claudePath ?? join(homedir(), ".local/bin/claude");
+      const claudePath = options.claudePath ?? findClaude();
       const cwd = options.cwd ?? ownedDirectory!;
       const proc = spawnClaude(claudePath, cwd);
       client = new ClaudeConnectors(proc, timeout, discoveryTimeout,

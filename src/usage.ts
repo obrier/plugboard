@@ -1,13 +1,13 @@
 import { existsSync, readdirSync, statSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { loadManifest, manifestIds, sourceName } from "./cache";
-import { cacheDir, expandHome } from "./paths";
+import { cacheDir, claudeConfigDir, expandHome } from "./platform";
 
 export type Usage = { generatedAt: string; days: number; files: number; calls: number; counts: Record<string, number> };
 
 export const usagePath = () => join(cacheDir(), "usage.json");
 export const loadUsage = (): Usage | undefined => (existsSync(usagePath()) ? JSON.parse(readFileSync(usagePath(), "utf8")) : undefined);
-const transcriptsDir = () => expandHome(process.env.PLUGBOARD_TRANSCRIPTS ?? "~/.claude/projects");
+const transcriptsDir = () => (process.env.PLUGBOARD_TRANSCRIPTS ? expandHome(process.env.PLUGBOARD_TRANSCRIPTS) : join(claudeConfigDir(), "projects"));
 
 function transcripts(dir: string, since: number): string[] {
   if (!existsSync(dir)) return [];

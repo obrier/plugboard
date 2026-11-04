@@ -5,7 +5,7 @@ import { captureConnectorSchemas } from "./bridge/capture";
 import type { ConnectorServer } from "./bridge/client";
 import { claudePath, claudeVersion, connect } from "./claude";
 import { fail } from "./errors";
-import { cacheDir } from "./paths";
+import { cacheDir } from "./platform";
 import type { Policy } from "./policy";
 
 export type Annotations = { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };

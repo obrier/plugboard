@@ -1,11 +1,10 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { ClaudeConnectors } from "./bridge/client";
 import { childEnv } from "./bridge/capture";
 import { fail } from "./errors";
+import { findClaude } from "./platform";
 import type { Policy } from "./policy";
 
-export const claudePath = (policy: Policy) => process.env.PLUGBOARD_CLAUDE ?? policy.claudePath ?? join(homedir(), ".local/bin/claude");
+export const claudePath = (policy: Policy) => findClaude(policy.claudePath);
 
 function run(path: string, args: string[]) {
   try {
@@ -30,7 +29,7 @@ export async function connect(policy: Policy) {
   } catch (error) {
     throw fail("BRIDGE_BROKEN", `Claude Code control protocol failed (${path}): ${(error as Error).message}`, [
       "Run `plugboard doctor` for details",
-      "After a breaking update, set claude_path in policy.toml to a version under ~/.local/share/claude/versions/",
+      "After a breaking update, set claude_path in policy.toml to an earlier Claude Code version (`plugboard doctor` names it)",
     ]);
   }
 }

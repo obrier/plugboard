@@ -3,10 +3,15 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -15,3 +20,48 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test # offline: the CLI tests drive test/fixtures/fake-claude.ts, never a real account
+
+  # Ubuntu on WSL2, on a hosted Windows runner: the test suite, then the compiled linux-x64 binary,
+  # including a planted Windows claude.exe on PATH that plugboard must refuse to use.
+  wsl2:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: wsl-bash {0}
+    steps:
+      - name: Keep LF line endings (the test fixtures are shebang scripts)
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          additional-packages: curl unzip ca-certificates
+      - name: Install Bun inside WSL
+        run: curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.2"
+      - name: Copy the checkout into the Linux home (not /mnt/<drive>)
+        run: |
+          cp -r "$(wslpath '${{ github.workspace }}')" ~/plugboard
+          chmod +x ~/plugboard/test/fixtures/*.ts ~/plugboard/scripts/*.sh
+      - name: Test
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          cd ~/plugboard
+          grep -qi microsoft /proc/sys/kernel/osrelease # this really is WSL
+          bun install --frozen-lockfile
+          bun test
+      - name: Compiled binary on WSL2
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          cd ~/plugboard
+          bun build --compile --target=bun-linux-x64 --outfile=dist/plugboard src/cli.ts
+          ./dist/plugboard --version
+          ./dist/plugboard --help > /dev/null
+          # a Windows Claude Code visible through interop must be named, never used
+          mkdir -p /mnt/c/plugboard-trap && touch /mnt/c/plugboard-trap/claude.exe /mnt/c/plugboard-trap/claude
+          out=$(PATH="/mnt/c/plugboard-trap:$PATH" ./dist/plugboard doctor --out json || true)
+          echo "$out"
+          echo "$out" | grep -q '"check":"platform","status":"ok","detail":"wsl-x64'
+          echo "$out" | grep -q 'missing or not runnable; found Windows'
+          echo "$out" | grep -q 'plugboard-trap/claude.exe'
