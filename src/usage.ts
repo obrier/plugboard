@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, statSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadManifest, manifestIds, sourceName } from "./cache";
-import { cacheDir, claudeConfigDir, expandHome } from "./platform";
+import { cacheDir, claudeConfigDir, expandHome, saveJson } from "./platform";
 
 export type Usage = { generatedAt: string; days: number; files: number; calls: number; counts: Record<string, number> };
 
@@ -54,7 +54,6 @@ export function scanUsage(days = 30): Usage {
     }
   }
   const usage = { generatedAt: new Date().toISOString(), days, files: files.length, calls, counts };
-  mkdirSync(cacheDir(), { recursive: true });
-  writeFileSync(usagePath(), JSON.stringify(usage));
+  saveJson(usagePath(), usage); // best effort: the counts are returned either way
   return usage;
 }

@@ -395,3 +395,13 @@ describe("batch --axi and full results on disk", () => {
     expect((await run(["slack", "search-public", "--query", long, "--axi", "--full"])).stdout).not.toContain("full result:");
   });
 });
+
+test("doctor: a state folder it can't write doesn't fail the check; it says so", async () => {
+  writeFileSync(join(fake, "gmail-connected"), "1");
+  const blocked = join(root, "state-is-a-file");
+  writeFileSync(blocked, "");
+  const r = await run(["doctor", "--as", "gather", "--out", "json"], { env: { PLUGBOARD_STATE: blocked } });
+  const result = JSON.parse(r.stdout);
+  expect(result.checks.find((c: { check: string }) => c.check === "state")).toMatchObject({ status: "warn", detail: expect.stringContaining("not saved") });
+  expect(r.code).toBe(0);
+});

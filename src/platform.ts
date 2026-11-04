@@ -1,9 +1,18 @@
 // Everything that differs between macOS, Linux, WSL and Windows lives here.
 // Each function takes a context (platform, env, home, file checks) so tests can
 // exercise every platform from any machine; callers use the real one by default.
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
+
+/** Saves a record of a result a command already has (doctor's last run, usage counts). Best effort: a folder
+ * it can't write, as in an agent's sandbox, must not fail the command. Returns why it wasn't saved, if it wasn't. */
+export function saveRecord(path: string, write: () => void = () => {}): string | undefined {
+  try { write(); return undefined; } catch (error) { return `${path}: ${(error as Error).message}`; }
+}
+export function saveJson(path: string, value: unknown): string | undefined {
+  return saveRecord(path, () => { mkdirSync(posix.dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)); });
+}
 
 export type Ctx = {
   platform: NodeJS.Platform;
