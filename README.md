@@ -11,7 +11,7 @@ $ plugboard                              # connectors and their status, no netwo
 $ plugboard find "search logs"           # every tool, by name and description
 $ plugboard slack read-thread --help     # flags generated from the tool's schema
 $ plugboard slack search-public --keywords deploy --after -1d --out md
-$ plugboard dd search-datadog-logs --help
+$ plugboard datadog search-datadog-logs --help
 ```
 
 Same commands, same result, from any harness or script. When Anthropic adds a connector to claude.ai, `plugboard refresh` makes it a command too.
@@ -77,7 +77,7 @@ plugboard slack read-thread --channel-id C0123 --message-ts 1762243803.1234
 plugboard usage                    # rank tools by how often your Claude Code sessions call them
 ```
 
-Tool names come in a short form: `slack_search_public` becomes `slack search-public`. The original name works too. Short connector aliases are built in: `cal`, `gcal`, `drive`, `docs`, `sheets`, `slides`, `dd`, `jira`.
+Tool names come in a short form: `slack_search_public` becomes `slack search-public`. The original name works too. Short connector aliases are built in: `cal`, `gcal`, `drive`. Add your own under `[aliases]` in the policy.
 
 ## Passing arguments
 

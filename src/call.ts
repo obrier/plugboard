@@ -252,7 +252,7 @@ export function listTools(policy: Policy, manifest: Manifest, o: { all?: boolean
       ...(hidden ? [`${hidden} more tools: add --all, or \`${BIN} find <words>\``] : []),
       ...(ranked ? [] : [`Run \`${BIN} usage\` to rank tools by how often your Claude Code sessions call them`]),
       `Run \`${BIN} ${manifest.id} <tool> --help\` for its flags`,
-      "class: read | write (write! = destructive). Writes need the executor profile",
+      "class: read | write (write! = destructive). Writes need a profile with mode = \"write\"",
     ],
   };
 }

@@ -9,20 +9,10 @@ import { BIN, invoke, prepare, profileName } from "./call";
 import { authStatus, claudePath, claudeVersion, connect, costGuard } from "./claude";
 import { EXIT } from "./errors";
 import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, stateDir, windowsClaudeFromWSL } from "./platform";
-import { classify, loadPolicy, matches, profileFor, type Policy, type Profile } from "./policy";
+import { classify, DEFAULT_ALIASES, loadPolicy, matches, probeTools, profileFor, type Policy, type Profile } from "./policy";
 
 type Status = "ok" | "warn" | "fail" | "info";
 type Check = { check: string; status: Status; detail: string };
-
-/** Cheap read per connector, used by check 10. Each is asserted read-class before it runs. */
-const LIVE_READS: Record<string, [string, Record<string, unknown>]> = {
-  gmail: ["list_labels", {}],
-  "google-calendar": ["list_calendars", {}],
-  slack: ["slack_search_channels", { keywords: ["general"], limit: 1, response_format: "concise" }],
-  "google-drive": ["list_recent_files", { pageSize: 1, excludeContentSnippets: true }],
-  sentry: ["find_organizations", {}],
-  datadog: ["search_datadog_monitors", { query: "tag:team:example", max_tokens: 500, telemetry: { intent: "plugboard doctor liveness check" } }],
-};
 
 const KNOWN_MESSAGE_TYPES = new Set(["control_response", "system"]);
 export const doctorPath = () => join(stateDir(), "doctor.json");
@@ -81,7 +71,7 @@ export async function doctor(argv: string[]) {
     const dead = [...prof.allow, ...prof.deny, ...policy.overrides.read, ...policy.overrides.write]
       .filter(p => !tools.some(({ id, t }) => matches(p, id, t.name)));
     const known = Object.keys(index?.connectors ?? {});
-    const unknownAliases = Object.entries(policy.aliases).filter(([, id]) => !known.includes(id)).map(([a]) => a);
+    const unknownAliases = Object.entries(policy.aliases).filter(([a, id]) => DEFAULT_ALIASES[a] !== id && !known.includes(id)).map(([a]) => a);
     add("policy", dead.length || unknownAliases.length ? "warn" : "ok",
       `${policy.source ? collapseHome(policy.source) : "built-in default"}; profile ${profile} (${prof.mode})`
       + (dead.length ? `; entries matching nothing: ${dead.join(", ")}` : "") + (unknownAliases.length ? `; aliases to unknown connectors: ${unknownAliases.join(", ")}` : ""),
@@ -156,20 +146,24 @@ export async function doctor(argv: string[]) {
             `Run \`${BIN} refresh\`, then check transforms for changed parameters`);
         } catch (error) { broken = true; add("schema-drift", "fail", `capture failed: ${(error as Error).message}`); }
       }
-      // 10: one cheap read per required connector
+      // 10: one cheap read per required connector: the first of its argument-free read tools that succeeds
       for (const id of required) {
-        const probe = LIVE_READS[id];
         const manifest = loadManifest(id);
-        const tool = probe && manifest?.tools.find(t => t.name === probe[0]);
-        if (blind.has(id) || !tool || !manifest || broken) continue;
-        if (classify(policy, id, tool) !== "read") { add(`read:${id}`, "fail", `${tool.name} is not read-class; probe skipped`); continue; }
-        try {
-          const t0 = Date.now();
-          await invoke(client, prepare(policy, manifest, tool, probe[1], false), 30_000);
-          add(`read:${id}`, "ok", `${tool.name} in ${Date.now() - t0}ms`);
-        } catch (error) {
+        const tools = manifest ? probeTools(policy, id, manifest.tools) : [];
+        if (blind.has(id) || !manifest || !tools.length || broken) continue;
+        let lastError = "";
+        for (const tool of tools) {
+          try {
+            const t0 = Date.now();
+            await invoke(client, prepare(policy, manifest, tool, {}, false), 30_000);
+            add(`read:${id}`, "ok", `${tool.name} in ${Date.now() - t0}ms`);
+            lastError = "";
+            break;
+          } catch (error) { lastError = `${tool.name}: ${(error as Error).message}`; }
+        }
+        if (lastError) {
           blind.add(id);
-          add(`read:${id}`, "fail", (error as Error).message.slice(0, 160), `Reconnect ${manifest.connectorName.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
+          add(`read:${id}`, "fail", lastError.slice(0, 160), `Reconnect ${manifest.connectorName.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
         }
       }
       // 5: zero cost (after every call above)

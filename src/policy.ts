@@ -16,10 +16,7 @@ export type Policy = {
 };
 export const TIME_FORMATS = ["unix", "unix-ms", "rfc3339", "date"];
 
-export const DEFAULT_ALIASES: Record<string, string> = {
-  cal: "google-calendar", gcal: "google-calendar", drive: "google-drive", docs: "google-docs", sheets: "google-sheets",
-  slides: "google-slides", dd: "datadog", jira: "atlassian-mcp", confluence: "atlassian-mcp",
-};
+export const DEFAULT_ALIASES: Record<string, string> = { cal: "google-calendar", gcal: "google-calendar", drive: "google-drive" };
 const DEFAULT_PROFILE: Profile = { mode: "read", allow: ["*:*"], deny: [], allowDestructive: false, allowInAgent: false };
 
 const bad = (path: string, message: string) => fail("VALIDATION_ERROR", `policy ${path}: ${message}`, [`Edit ${path}`]);
@@ -98,6 +95,10 @@ export function classify(policy: Policy, id: string, tool: Pick<ManifestTool, "n
   return tool.annotations?.readOnlyHint === true && tool.annotations.destructiveHint !== true ? "read" : "write";
 }
 
+/** A connector's read tools that need no arguments: cheap liveness probes. Some still fail when called bare, so try them in order. */
+export const probeTools = (policy: Policy, id: string, tools: ManifestTool[]) =>
+  tools.filter(tool => classify(policy, id, tool) === "read" && !(tool.inputSchema.required ?? []).length);
+
 export function profileFor(policy: Policy, name: string): Profile {
   const profile = policy.profiles[name];
   if (!profile) throw fail("POLICY_DENIED", `Unknown profile "${name}"`, [`Profiles: ${Object.keys(policy.profiles).join(", ")}`]);
@@ -117,7 +118,7 @@ export function decide(policy: Policy, profileName: string, id: string, tool: Pi
     if (!profile.allow.some(p => matches(p, id, tool.name))) throw denied(`${key} is not in profiles.${profileName}.allow`);
     return { profile, cls };
   }
-  if (profile.mode !== "write") throw denied(`${key} is a write tool and profile "${profileName}" is read-only`, ["Only the executor profile writes; see `plugboard policy`"]);
+  if (profile.mode !== "write") throw denied(`${key} is a write tool and profile "${profileName}" is read-only`, ["Use a profile with mode = \"write\"; see `plugboard policy`"]);
   if (!write) throw denied(`${key} is a write tool: pass --write`);
   if (!profile.allow.includes(key)) throw denied(`write tools must be named exactly in profiles.${profileName}.allow; ${key} is not`);
   if (tool.annotations?.destructiveHint === true && !profile.allowDestructive) throw denied(`${key} is destructive and profiles.${profileName}.allow_destructive is false`);

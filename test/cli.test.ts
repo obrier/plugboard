@@ -190,6 +190,19 @@ test("doctor: gate exit codes, blind connectors, drift and audit warnings", asyn
   expect((await run(["doctor"])).code).toBe(10);
 });
 
+test("doctor probes a required connector with one of its own argument-free read tools", async () => {
+  const result = JSON.parse((await run(["doctor", "--as", "gather", "--out", "json"])).stdout);
+  expect(result.checks.find((c: { check: string }) => c.check === "read:slack")?.status).toBe("ok");
+  expect(calls().map(c => c.tool)).toContain("mcp__claude_ai_Slack__slack_search_public");
+});
+
+test("doctor warns about aliases the policy defines, never about built-in ones", async () => {
+  const policyCheck = async () => JSON.parse((await run(["doctor", "--out", "json"])).stdout).checks.find((c: { check: string }) => c.check === "policy").detail as string;
+  expect(await policyCheck()).not.toContain("aliases to unknown connectors");
+  writeFileSync(join(root, "policy.toml"), `${POLICY}\n[aliases]\nmine = "no-such-connector"\n`);
+  expect(await policyCheck()).toContain("aliases to unknown connectors: mine");
+});
+
 test("home, listing, help, find and policy never spawn claude; plain by default, AXI with --axi", async () => {
   const env = { PLUGBOARD_CLAUDE: "/nonexistent/claude" };
   expect((await run([], { env })).all).toMatch(/connectors:\n\s+ID\s+STATUS/);

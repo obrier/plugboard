@@ -3,7 +3,7 @@
 // Read-only by construction: it calls only tools the policy classifies as read.
 import { expect, test } from "bun:test";
 import { loadIndex, loadManifest } from "../src/cache";
-import { classify, loadPolicy } from "../src/policy";
+import { loadPolicy, probeTools } from "../src/policy";
 
 const CLI = `${import.meta.dir}/../src/cli.ts`;
 const isJson = (text: string) => { try { JSON.parse(text); return true; } catch { return false; } };
@@ -21,13 +21,11 @@ test.skipIf(!process.env.LIVE)("live reads succeed at zero cost, and doctor pass
   const connected = Object.entries(loadIndex()?.connectors ?? {}).filter(([, entry]) => entry.status === "connected").map(([id]) => id);
   if (!connected.length) throw new Error("No connected connector in the cache: run `plugboard refresh` first");
 
-  // Per connector, the read tools that need no arguments. Some still fail upstream when called bare,
-  // so a connector passes when one of them succeeds; a connector with none is skipped.
+  // Per connector, its probe tools, as doctor uses them: a connector passes when one succeeds; one with none is skipped.
   const failures: string[] = [];
   let tried = 0;
   for (const id of connected) {
-    const tools = (loadManifest(id)?.tools ?? [])
-      .filter(tool => classify(policy, id, tool) === "read" && !(tool.inputSchema.required ?? []).length);
+    const tools = probeTools(policy, id, loadManifest(id)?.tools ?? []);
     if (!tools.length) continue;
     tried++;
     const errors: string[] = [];

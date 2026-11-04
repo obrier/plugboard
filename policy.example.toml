@@ -4,7 +4,7 @@
 version = 1
 # claude_path = "~/.local/share/claude/versions/2.1.312"   # rollback lever after a breaking update
 
-[aliases]           # merged over the built-in ones (cal, gcal, drive, docs, sheets, slides, dd, jira)
+[aliases]           # merged over the built-in ones (cal, gcal, drive)
 
 [overrides]
 read  = []          # unannotated tools that only read; say why on each line
