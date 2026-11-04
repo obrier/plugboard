@@ -43,7 +43,19 @@ Rules:
 
 Codex reads `AGENTS.md` in the project root (and `~/.codex/AGENTS.md` for all projects). Paste the block there.
 
-Optional: `plugboard setup hooks` installs a session-start hook so Codex sees the home view (`plugboard --axi`) at the start of every session, without spawning Claude Code. `--project` limits it to this repository; `--remove` undoes it.
+Codex's sandbox blocks Plugboard by default: allow what [Sandboxes](#sandboxes) lists. In `~/.codex/config.toml`:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+writable_roots = ["/Users/<you>/.local/state/plugboard"]   # an absolute path
+```
+
+Checked with Codex 0.161.0: `read-only`, the default for `codex exec`, can't start Claude Code, and `workspace-write` without network can't reach claude.ai.
+
+Optional: `plugboard setup hooks` installs a session-start hook so Codex sees the home view (`plugboard --axi`) at the start of every session, without spawning Claude Code. `--project` limits it to this repository; `--remove` undoes it. Codex runs a hook only once you trust it: the next interactive `codex` shows "Hooks need review"; accept it there, or later with `/hooks`. `codex exec` never asks, and skips an untrusted hook without a word.
 
 ## Gemini CLI
 
@@ -87,6 +99,15 @@ You already have the connectors in-session, so Plugboard is for the scripts and 
 - `plugboard usage` ranks tools by how often your past sessions called them, which `plugboard <connector>` uses to order its listing.
 
 Writes from inside a Claude Code session are refused unless a profile sets `allow_in_agent = true`. Leave it off.
+
+## Sandboxes
+
+Plugboard drives Claude Code, which reaches claude.ai, so a sandboxed agent must allow:
+- **network access**, for Claude Code to reach claude.ai;
+- **writes to the temp folder** (`$TMPDIR`), where each run starts Claude Code;
+- **writes to `~/.local/state/plugboard`**, for `doctor`'s last result, `batch --axi`'s result files, and the audit log. Without it, reads still work: `doctor` warns that it couldn't save, and `batch --axi` puts every result inline.
+
+A sandbox that blocks one of these gives exit 10 with a hint that links here. [Codex](#codex) shows the settings for its sandbox.
 
 ## Plain bash and cron
 
