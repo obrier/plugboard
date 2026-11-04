@@ -308,4 +308,5 @@ test("doctor: a connector it can't probe gets a line saying so, not silence", as
   const checks: { check: string; status: string; detail: string }[] = JSON.parse(r.stdout).checks;
   expect(checks.find(c => c.check === "read:slack")).toMatchObject({ status: "info", detail: expect.stringContaining("not checked") });
   expect(checks.find(c => c.check === "read:gmail")?.status).toBe("ok");
+  expect(r.code).toBe(0); // info never changes the exit code
 });
