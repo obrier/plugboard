@@ -33,3 +33,16 @@ What the shared session needs that today's session doesn't do:
 1. **It grows on demand.** Today a session is opened for the connectors known up front (the CLI's one call, batch's lines). The shared one takes connectors as they are first called: on the direct path that is only an ID lookup; once fallen back to Claude Code, it waits for that connector's discovery.
 2. **It never keeps a program from exiting.** The direct path holds no process. A Claude Code fallback is a child process: it closes itself when idle (about 30 s) and on process exit; `close()` stays for anyone who wants to be explicit. To check: that Node's fetch keeps no idle socket holding the event loop.
 3. **It stays valid over hours.** Before each direct call it checks the login's expiry and re-reads the login when close, since a Claude Code fallback may have renewed it.
+
+## 2. A call is one object, the shape of a batch line
+
+Chosen 2026-11-05, over positional arguments (`call(connector, tool, args, options)`).
+
+```ts
+await call({ connector: "google-calendar", tool: "list_events", args: { calendarId: "primary" } });
+await call({ connector: "gcal", tool: "list-events", args: { calendarId: "primary" }, profile: "reader", timeoutMs: 30_000, signal });
+```
+
+- The same object as a batch line, `{ connector, tool, args }`, with the call's options beside it: a line can be passed to `call()` as it is, and new fields don't change any order.
+- `connector` takes an ID or a policy alias; `tool` takes the tool's name, the CLI's short name or its kebab form, as the core resolves them today.
+- `timeoutMs` is the CLI's `--deadline`. `signal` is the usual `AbortSignal`: a read cancelled is dropped; a write cancelled after it was sent is recorded as an unknown outcome, like a timeout.
