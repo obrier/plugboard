@@ -160,7 +160,8 @@ test("every child skips Claude Code's nonessential traffic: its telemetry flush 
 
 // A program that used Claude Code and never closed it still exits at once, and takes Claude Code with it.
 for (const target of ["bun", "node"] as const)
-  test(`an open client never keeps a program from exiting, and is stopped when it exits (${target})`, async () => {
+  // The WSL2 job has no Node: the other jobs run the Node case.
+  test.skipIf(target === "node" && !Bun.which("node"))(`an open client never keeps a program from exiting, and is stopped when it exits (${target})`, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "connector-exit-test-"));
     directories.push(cwd);
     const script = join(cwd, "use.ts");
