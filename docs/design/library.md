@@ -60,3 +60,18 @@ const sent = await write(p, { key: "reply-42" });  // { sent: true, key, ref, va
 - A plan is plain JSON and can travel: an agent plans and saves it, a person approves it, a script runs `write(JSON.parse(saved), { key })`. `write` trusts nothing in the object: it plans the plan's request again and sends only if the hash still matches the plan's, so a plan edited in transit is refused.
 - So a plan carries the request it was made from (`request: { connector, tool, args, profile }`), not only the payload after transforms; planning the payload again would apply a transform such as `"-1d"` twice. A relative time in a write's args resolves to a new instant when it is planned again, changing the hash: such a write is refused, as `--write --expect-hash` refuses it in the CLI today.
 - Every check stays in the core: the write profile, the key, the hash, the claim in the audit log, replaying a key already sent, and refusing writes inside a Claude Code session unless the profile allows it.
+
+## 4a. A read returns `{ value, raw, via }`
+
+Chosen 2026-11-05, over returning the value itself.
+
+```ts
+const { value } = await call({ connector: "google-calendar", tool: "list_calendars" });
+const r = await call({ connector: "drive", tool: "fetch", args: { id } });
+r.raw.content; // the MCP result untouched: images, several blocks
+r.via;         // "direct" | "claude-code"
+```
+
+- `value` is the result as the CLI prints it (`unwrap`: `structuredContent`, else the text blocks parsed as JSON, else `{ text }` or `{ content }`); `raw` is the MCP result as the connector sent it.
+- `via` names the path that served the call, so a script can see it fell back to Claude Code without running `doctor`.
+- It lines up with `write()`'s result, `{ sent, key, ref, value }` or `{ replayed, key, ref }`.
