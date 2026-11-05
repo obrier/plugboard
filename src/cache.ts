@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { captureConnectorSchemas } from "./bridge/capture";
 import type { ConnectorServer } from "./bridge/client";
-import { claudePath, claudeVersion, connect } from "./claude";
+import { claudePath, claudeVersion, connectClaude } from "./claude";
 import { asAxiError, fail } from "./errors";
 import { cacheDir, writeJson } from "./platform";
 import type { Policy } from "./policy";
@@ -11,7 +11,11 @@ import type { Policy } from "./policy";
 export type Annotations = { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
 /** A connector's tool as cached: the bridge's ConnectorManifest tool shape. */
 export type ManifestTool = { name: string; sourceName: string; description?: string; inputSchema: Record<string, any>; annotations?: Annotations };
-export type Manifest = { id: string; connectorName: string; tools: ManifestTool[]; capturedAt: string; hidden?: string[] };
+/** `server`: the connector's claude.ai config at capture, which lets a call start Claude Code with only this connector. */
+export type Manifest = { id: string; connectorName: string; tools: ManifestTool[]; capturedAt: string; hidden?: string[]; server?: Record<string, unknown> };
+/** A claude.ai connector's config, kept only when it names the server's ID: without one, Claude Code never settles it. */
+const proxyConfig = (config?: Record<string, unknown>) =>
+  config?.type === "claudeai-proxy" && typeof config.id === "string" ? { server: config } : {};
 export type IndexEntry = { name: string; status: string; capturedAt?: string; staleSince?: string; tools: number; read: number; write: number; sha256?: string };
 export type CacheIndex = { format: 1; claude?: string; testedVersions: string[]; connectors: Record<string, IndexEntry> };
 
@@ -85,7 +89,7 @@ export function mergeCapture(previous: CacheIndex | undefined, servers: Connecto
     }
     const old = index.connectors[id];
     if (server.status === "connected" && tools.length) {
-      manifests.push({ id, connectorName: server.name, tools, capturedAt: now, ...(hidden.length ? { hidden } : {}) });
+      manifests.push({ id, connectorName: server.name, tools, capturedAt: now, ...(hidden.length ? { hidden } : {}), ...proxyConfig(server.config) });
       index.connectors[id] = { name: server.name, status: "connected", capturedAt: now, ...countClasses(tools), sha256: sha256(tools) };
       result.updated.push(id);
       result.hidden += hidden.length;
@@ -103,7 +107,7 @@ export function mergeCapture(previous: CacheIndex | undefined, servers: Connecto
 }
 
 export async function refresh(policy: Policy, only?: string[]): Promise<RefreshResult> {
-  const client = await connect(policy);
+  const client = await connectClaude(policy);
   try {
     // Discovery and capture run side by side: two spawns, ~3.5 s in total.
     const [servers, capture] = await Promise.all([

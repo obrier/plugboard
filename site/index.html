@@ -155,7 +155,7 @@ connectors:
     <div class="grid">
       <div class="card"><h3><b>01</b>One login, every agent</h3><p>Connect a service once in claude.ai. Codex, Gemini CLI, pi, Hermes, OpenCode and your scripts can all call it. No new OAuth, no API keys, and no third party holding your tokens.</p></div>
       <div class="card"><h3><b>02</b>Safe by default</h3><p>Read-only unless a policy profile says otherwise. Writes need a plan, its exact hash and an idempotency key. They're never retried, always audited, and refused from inside agent sessions.</p></div>
-      <div class="card"><h3><b>03</b>Deterministic</h3><p>The same command makes the same call, with no model in the loop. Cron jobs, CI checks and batch pipelines just work, and every run proves it cost $0 and 0 tokens.</p></div>
+      <div class="card"><h3><b>03</b>Deterministic</h3><p>The same command makes the same call, with no model in the loop. Cron jobs, CI checks and batch pipelines just work, and no call can reach a model: $0 and 0 tokens.</p></div>
       <div class="card"><h3><b>04</b>New connectors, no wrappers</h3><p>When a connector appears in claude.ai, <code>plugboard refresh</code> makes it a command. There's no community MCP server to wait for, and no CLI to write.</p></div>
     </div>
   </section>

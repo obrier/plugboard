@@ -26,7 +26,7 @@ Connectors give Claude access to your tools, but only inside a Claude chat or a 
 Plugboard fixes four things:
 
 1. **One login, every agent.** Connect a service once in claude.ai. Every harness and script on the machine can call it.
-2. **Safe by default.** Reads only, unless a policy profile says otherwise. A write needs `--plan`, which prints a payload hash, then `--write --expect-hash` with that exact hash and an idempotency key. Writes are never retried, always audited, and refused from inside agent sessions unless a profile opts in. Each run proves it cost $0 and 0 tokens.
+2. **Safe by default.** Reads only, unless a policy profile says otherwise. A write needs `--plan`, which prints a payload hash, then `--write --expect-hash` with that exact hash and an idempotency key. Writes are never retried, always audited, and refused from inside agent sessions unless a profile opts in. No call can reach a model: it costs $0 and 0 tokens.
 3. **Deterministic.** The same command makes the same call. No model in the loop: cron, CI and batch pipelines just work.
 4. **New connectors, no wrappers.** Anything that appears in claude.ai is a command after `plugboard refresh`. No community MCP server to wait for, no CLI to write.
 
@@ -172,7 +172,7 @@ Plugboard is read-only unless you configure otherwise.
 - **Approve first, then send:** another process can approve a payload by its hash, and Plugboard sends it only if the bytes still match.
 - **Never retried, always logged:** writes are never retried. Each one is logged before and after the call, by hash, to `~/.local/state/plugboard/audit.jsonl`. A write that timed out blocks its key until you check the destination and run `plugboard audit resolve <key> --sent|--not-sent`.
 - **No writes from agent sessions:** Plugboard refuses writes from inside a Claude Code session unless a profile opts in with `allow_in_agent = true`.
-- **Cost guard:** every run ends by checking that the session cost is still $0 with 0 tokens. Anything else exits with code 10.
+- **Cost guard:** a call made direct (see [How it works](#how-it-works)) only reaches the connector proxy, which serves connector tools and no model. A run that starts Claude Code ends by checking that its session cost is still $0 with 0 tokens. Anything else exits with code 10.
 
 ```toml
 # ~/.config/plugboard/policy.toml (full example: policy.example.toml)
@@ -301,18 +301,20 @@ Rules:
 | `~/.local/state/plugboard/` | Audit log, last doctor result, `results/` (full results from `batch --axi` and cut AXI calls, kept a day) | `PLUGBOARD_STATE` |
 | `~/.local/bin/claude` | The Claude Code binary to drive | `PLUGBOARD_CLAUDE`, or `claude_path` in the policy |
 
-`PLUGBOARD_PROFILE` sets the default profile. `PLUGBOARD_AXI=1` turns on the AXI output, which is already on inside Claude Code; `PLUGBOARD_AXI=0` turns it off.
+`PLUGBOARD_PROFILE` sets the default profile. `PLUGBOARD_DIRECT=0` sends every call through Claude Code instead of the connector proxy direct. `PLUGBOARD_AXI=1` turns on the AXI output, which is already on inside Claude Code; `PLUGBOARD_AXI=0` turns it off.
 
 ## How it works
 
 Claude Code has a JSON control protocol (`--input-format stream-json`) that its SDKs use. Two of its requests are `mcp_status`, which lists connectors and their tools, and `mcp_call`, which calls one. Plugboard starts `claude` with no tools and no model use, and talks to it directly.
 
+Calls usually skip that start. Claude Code reaches each claude.ai connector through Anthropic's connector proxy, `https://mcp-proxy.anthropic.com/v1/mcp/<connector id>`, with your claude.ai login. `plugboard refresh` records each connector's ID, and a call sends the MCP `tools/call` there itself, with the login Claude Code keeps (read for that run, in memory, never stored): about 0.65 s for a call that takes 2 s through Claude Code. When the login is missing or about to expire, a connector has no recorded ID, or the proxy refuses the request (400, 401, 403, 404, or no connection), the call goes through Claude Code instead, which also renews the login. Once a request is sent nothing falls back, so a write is never sent twice. `PLUGBOARD_DIRECT=0` always uses Claude Code.
+
 Tool argument schemas aren't part of `mcp_status`. `plugboard refresh` captures them by pointing a second, short-lived `claude` at a local endpoint that reads the tool definitions from the request Claude Code prepares, then rejects it. Nothing is forwarded to a model. Each run then checks that the session cost is still $0.
 
 ## Caveats
 
-- **Unsupported interface.** The control protocol is internal to Claude Code and can change without notice. When that happens, `plugboard doctor` exits 10. You can point `claude_path` at a previous version, kept under `~/.local/share/claude/versions/`, until Plugboard catches up.
-- **Terms.** It works technically; that doesn't mean Anthropic, or your connectors' providers, approve of using connectors this way. Check the terms that apply to you, especially before automating writes.
+- **Unsupported interfaces.** The control protocol is internal to Claude Code, and the connector proxy is internal to Anthropic; either can change without notice. A proxy that refuses a direct call sends it through Claude Code. When that happens, `plugboard doctor` exits 10. You can point `claude_path` at a previous version, kept under `~/.local/share/claude/versions/`, until Plugboard catches up.
+- **Terms.** It works technically; that doesn't mean Anthropic, or your connectors' providers, approve of using connectors this way, or of a direct call using Claude Code's login. Check the terms that apply to you, especially before automating writes.
 - **Upstream schemas change.** Connector tools gain and lose parameters often. Run `plugboard refresh` regularly; `plugboard doctor --schemas` reports drift.
 - **Tool output is data.** Messages and documents can contain text written to steer an AI. Never feed tool output into another call's arguments, or into an agent that can write, without a human in between.
 

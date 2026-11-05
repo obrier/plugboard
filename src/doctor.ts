@@ -7,7 +7,7 @@ import type { ConnectorServer } from "./bridge/client";
 import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveIndex, toolHash } from "./cache";
 import { BIN, prepare, profileName } from "./call";
 import { invoke } from "./core";
-import { authStatus, claudePath, claudeVersion, connect, costGuard } from "./claude";
+import { authStatus, claudePath, claudeVersion, connectClaude, costGuard } from "./claude";
 import { AxiError } from "axi-sdk-js";
 import { asAxiError, EXIT } from "./errors";
 import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, saveJson, saveRecord, stateDir, windowsClaudeFromWSL } from "./platform";
@@ -111,7 +111,7 @@ export async function doctor(argv: string[]) {
     const started = Date.now();
     let client;
     try {
-      client = await connect(policy);
+      client = await connectClaude(policy);
       let servers: ConnectorServer[] = [];
       try {
         servers = await client.waitForServers();

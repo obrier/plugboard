@@ -31,7 +31,7 @@ beforeEach(() => {
   writeFileSync(join(root, "policy.toml"), POLICY);
   rmSync(join(root, "transforms.toml"), { force: true });
   const servers = [
-    { name: "claude.ai Slack", status: "connected", tools: [
+    { name: "claude.ai Slack", status: "connected", config: { type: "claudeai-proxy", url: "https://mcp.slack.com/mcp", id: "mcpsrv_01slack" }, tools: [
       { name: "slack_search_public", annotations: { readOnly: true } }, { name: "slack_send_message" },
       { name: "slack_delete_message", annotations: { destructive: true } }, { name: "slack_create_note" }] },
     { name: "claude.ai Gmail", status: "connected", tools: [{ name: "list_labels", annotations: { readOnly: true } }] },
@@ -54,6 +54,7 @@ async function run(args: string[], o: { stdin?: string; env?: Record<string, str
     PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_TRANSFORMS: join(root, "transforms.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, ...o.env };
   delete env.CLAUDECODE; // these tests run inside Claude Code; the tripwire test sets it back on purpose
   delete env.PLUGBOARD_PROFILE;
+  env.PLUGBOARD_DIRECT = "0"; // the fake is Claude Code: the direct path would read the real login and call the real proxy
   Object.assign(env, o.env);
   const proc = Bun.spawn(["bun", cli, ...args], { env, stdin: o.stdin === undefined ? "ignore" : new Blob([o.stdin]), stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
@@ -63,6 +64,11 @@ const calls = () => (existsSync(join(fake, "calls.jsonl")) ? readFileSync(join(f
 const audit = () => readFileSync(join(root, "state/audit.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
 const SEND = ["slack", "send-message", "--channel-id", "D1", "--message", "hello"];
 const planHash = async (args: string[]) => JSON.parse((await run([...args, "--plan", "--out", "json"])).stdout).hash as string;
+
+test("refresh's manifest keeps the connector's claude.ai config: the direct path calls the proxy by its ID", () => {
+  const m = JSON.parse(readFileSync(join(root, "cache/manifests/slack.json"), "utf8"));
+  expect(m.server).toEqual({ type: "claudeai-proxy", url: "https://mcp.slack.com/mcp", id: "mcpsrv_01slack" });
+});
 
 test("read: transforms, unwrap, select, md; cost guard passes", async () => {
   const r = await run(["slack", "search-public", "--query", "x", "--after", "-1d", "--select", "user", "--out", "json"]);
