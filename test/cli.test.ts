@@ -38,7 +38,10 @@ async function run(args: string[], o: { stdin?: string; env?: Record<string, str
     PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_TRANSFORMS: join(root, "transforms.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, ...o.env };
   delete env.CLAUDECODE; // these tests run inside Claude Code; the tripwire test sets it back on purpose
   delete env.PLUGBOARD_PROFILE;
-  env.PLUGBOARD_DIRECT = "0"; // the fake is Claude Code: the direct path would read the real login and call the real proxy
+  // The fake is Claude Code, and the direct path would read the real login and call the real proxy: Claude Code it is,
+  // and with Claude Code's config in the test's own folder, even an empty transport (auto) stays on it.
+  env.PLUGBOARD_TRANSPORT = "claude-code";
+  env.CLAUDE_CONFIG_DIR = join(root, "claude-config");
   Object.assign(env, o.env);
   const proc = Bun.spawn(["bun", cli, ...args], { env, stdin: o.stdin === undefined ? "ignore" : new Blob([o.stdin]), stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
@@ -202,7 +205,7 @@ test("batch: per-line results, 429 backoff, auth fail-fast, writes refused, bad 
 
 test("batch reads stdin line by line: a line's result is out before the next line is written", async () => {
   const env: Record<string, string | undefined> = { ...process.env, PLUGBOARD_CACHE: join(root, "cache"), PLUGBOARD_STATE: join(root, "state"),
-    PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_TRANSFORMS: join(root, "transforms.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, PLUGBOARD_DIRECT: "0" };
+    PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_TRANSFORMS: join(root, "transforms.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, PLUGBOARD_TRANSPORT: "claude-code", CLAUDE_CONFIG_DIR: join(root, "claude-config") };
   delete env.CLAUDECODE;
   delete env.PLUGBOARD_PROFILE;
   const proc = Bun.spawn(["bun", cli, "batch", "--as", "gather"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -515,7 +518,7 @@ describe("transport", () => {
     expect(typo.all).toContain("VALIDATION_ERROR"); // before any line is read, as a bad --concurrency
     expect(typo.all).not.toContain("UNREACHABLE");
     const empty = await run(["batch", "--as", "gather"], { stdin: line, env: { PLUGBOARD_TRANSPORT: "" } });
-    expect(empty.code).toBe(0); // unset: PLUGBOARD_DIRECT=0 from run() applies, so the fake Claude Code serves it
+    expect(empty.code).toBe(0); // unset: auto, kept on Claude Code by run()'s CLAUDE_CONFIG_DIR, so the fake serves it
   });
 
   test("doctor under direct: a connector the proxy can't serve is blind, not a warning", async () => {
@@ -528,8 +531,9 @@ describe("transport", () => {
     expect(result.checks.find((c: { check: string }) => c.check === "direct:slack")).toMatchObject({ status: "fail", detail: expect.stringContaining("no connector ID cached") });
     expect(result.blind).toContain("slack");
     expect(r.code).toBe(7);
-    // Under auto the same connector works through Claude Code: a warning naming why, not a proxy failure.
-    const auto = JSON.parse((await run(["doctor", "--as", "gather", "--out", "json"], { env: { PLUGBOARD_TRANSPORT: "auto" } })).stdout);
+    // Under auto the same connector works through Claude Code: a warning naming why, not a proxy failure. Auto for real,
+    // so no CLAUDE_CONFIG_DIR: with no connector ID cached, the login is still never read.
+    const auto = JSON.parse((await run(["doctor", "--as", "gather", "--out", "json"], { env: { PLUGBOARD_TRANSPORT: "auto", CLAUDE_CONFIG_DIR: "" } })).stdout);
     expect(auto.checks.find((c: { check: string }) => c.check === "direct:slack")).toMatchObject({ status: "warn", detail: expect.stringContaining("no connector ID cached") });
   });
 

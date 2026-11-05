@@ -126,9 +126,9 @@ describe("transport", () => {
     expect(resolveTransport(policy("claude-code"))).toBe("direct");
     expect(resolveTransport(policy("claude-code"), "auto")).toBe("auto");
   });
-  test("PLUGBOARD_DIRECT=0, from 0.1.3, still means claude-code", () => {
+  test("PLUGBOARD_DIRECT, read from 0.1.3 to 0.2, is no longer read: PLUGBOARD_TRANSPORT replaced it", () => {
     process.env.PLUGBOARD_DIRECT = "0";
-    expect(resolveTransport(policy())).toBe("claude-code");
+    expect(resolveTransport(policy())).toBe("auto");
   });
   test("a custom CLAUDE_CONFIG_DIR keeps auto on Claude Code: where it keeps the login is unverified", () => {
     process.env.CLAUDE_CONFIG_DIR = "/tmp/elsewhere";
@@ -164,7 +164,7 @@ test("connect gives a session that needs connectors the direct path (no login re
   const { connect } = await import("../src/claude");
   const { parsePolicy } = await import("../src/policy");
   expect(await connect(parsePolicy("", "policy.toml"), [calendar])).toBeInstanceOf(DirectSession);
-  process.env.PLUGBOARD_DIRECT = "0";
+  process.env.PLUGBOARD_TRANSPORT = "claude-code";
   const off = await connect(parsePolicy("claude_path = \"/nonexistent/claude\"", "policy.toml"), [calendar]).catch(e => e);
   expect(off.code).toBe("UNREACHABLE"); // it tried to start Claude Code
 });
