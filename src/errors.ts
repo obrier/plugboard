@@ -1,28 +1,34 @@
-import { AxiError } from "axi-sdk-js";
 import { DiscoveryTimeoutError } from "./bridge/client";
 import { cacheDir, collapseHome, stateDir } from "./platform";
 
 export const EXIT = {
   OK: 0, UPSTREAM_ERROR: 1, TIMEOUT: 1, UNKNOWN: 1, VALIDATION_ERROR: 2, NOT_FOUND: 2,
   POLICY_DENIED: 3, AUTH_REQUIRED: 4, RATE_LIMITED: 5, WRITE_OUTCOME_UNKNOWN: 6, PARTIAL: 7,
-  BRIDGE_BROKEN: 10, COST_GUARD: 10,
+  UNREACHABLE: 10, COST_GUARD: 10,
 } as const;
 export type Code = keyof typeof EXIT;
 
-export const fail = (code: Code, message: string, help: string[] = []) => new AxiError(message, code, help);
+/** Every error Plugboard raises: a code (the CLI's exit codes name them), a message, and hints on what to do. */
+export class PlugboardError extends Error {
+  override name = "PlugboardError";
+  constructor(message: string, readonly code: Code, readonly hints: string[] = []) { super(message); }
+  get exitCode(): number { return EXIT[this.code] ?? 1; }
+}
+
+export const fail = (code: Code, message: string, hints: string[] = []) => new PlugboardError(message, code, hints);
 /** Errors a session raised knowing nothing was sent (a fallback that couldn't start Claude Code): a write records
  * them as not sent, whatever their code, instead of an unknown outcome to resolve by hand. */
 const unsent = new WeakSet<object>();
 export const markNotSent = <E>(error: E): E => { if (typeof error === "object" && error !== null) unsent.add(error); return error; };
 export const wasNotSent = (error: unknown) => typeof error === "object" && error !== null && unsent.has(error);
-export const exitFor = (error: unknown) => (error instanceof AxiError ? EXIT[error.code as Code] ?? 1 : 1);
+export const exitFor = (error: unknown) => (error instanceof PlugboardError ? error.exitCode : 1);
 
 // Matched against thrown control errors and isError text. Order matters: first hit wins.
 const TABLE: [Code, RegExp][] = [
   ["AUTH_REQUIRED", /\b(401|403)\b|invalid_auth|not_authed|token expired|needs? authentication|unauthori[sz]ed|MCP server not connected/i],
   ["RATE_LIMITED", /\b429\b|rate.?limit|too many requests|quota exceeded/i],
   ["TIMEOUT", /timed out waiting for mcp_call/i],
-  ["BRIDGE_BROKEN", /closed stdout|client is closed|Invalid control response|Invalid mcp_status/i],
+  ["UNREACHABLE", /closed stdout|client is closed|Invalid control response|Invalid mcp_status/i],
 ];
 
 export function classify(message: string): Code {
@@ -38,13 +44,13 @@ export const isPermissionError = (message: string) => PERMISSION.test(message);
 
 /** Every error as plugboard reports it, with a code and hints. The one place unknown errors get explained:
  * the CLI, batch and doctor all go through it. */
-export function asAxiError(error: unknown, fallback: Code = "UNKNOWN"): AxiError {
-  if (error instanceof AxiError) return error;
+export function asPlugboardError(error: unknown, fallback: Code = "UNKNOWN"): PlugboardError {
+  if (error instanceof PlugboardError) return error;
   if (error instanceof DiscoveryTimeoutError) {
     const pending = error.servers.filter(s => s.status === "pending").map(s => s.name);
     return error.servers.length
-      ? fail("BRIDGE_BROKEN", `Timed out waiting for connector discovery; still pending: ${pending.join(", ") || "none"}`, ["Run `plugboard doctor` for details"])
-      : fail("BRIDGE_BROKEN", "Claude Code listed no connectors in time: it can't reach claude.ai, or isn't logged in", [sandboxHint(), "Run `plugboard doctor` for details"]);
+      ? fail("UNREACHABLE", `Timed out waiting for connector discovery; still pending: ${pending.join(", ") || "none"}`, ["Run `plugboard doctor` for details"])
+      : fail("UNREACHABLE", "Claude Code listed no connectors in time: it can't reach claude.ai, or isn't logged in", [sandboxHint(), "Run `plugboard doctor` for details"]);
   }
   const message = error instanceof Error ? error.message : String(error);
   // The table above reads the bridge's and connectors' text, before the caller's fallback; a local system error

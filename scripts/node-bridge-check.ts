@@ -37,10 +37,10 @@ await check("a Claude Code it can't start is a permission problem (exit 10, the 
     writeFileSync(blocked, "#!/bin/sh\n");
     chmodSync(blocked, 0o644);
     const policy = parsePolicy("", join(dir, "policy.toml"));
-    const error = await connect({ ...policy, claudePath: blocked }).then(() => undefined, (e: unknown) => e as Error & { code?: string; suggestions?: string[] });
-    assert.equal(error?.code, "BRIDGE_BROKEN");
+    const error = await connect({ ...policy, claudePath: blocked }).then(() => undefined, (e: unknown) => e as Error & { code?: string; hints?: string[] });
+    assert.equal(error?.code, "UNREACHABLE");
     assert.match(error!.message, /Couldn't start Claude Code .*EACCES/);
-    assert.match(error!.suggestions!.join(" "), /sandbox/);
+    assert.match(error!.hints!.join(" "), /sandbox/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

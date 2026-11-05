@@ -1,8 +1,8 @@
 // The direct session against a fake proxy (fetch) and a fake Claude Code: no network, no keychain.
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { Manifest } from "../src/cache";
 import { costGuard } from "../src/claude";
-import { DirectSession, directEnabled, PROXY_ORIGIN, type Login } from "../src/direct";
+import { DirectSession, PROXY_ORIGIN, resolveTransport, viaOf, type Login } from "../src/direct";
 import { invoke } from "../src/core";
 
 const calendar: Manifest = {
@@ -45,7 +45,7 @@ function claude() {
 const session = (p: ReturnType<typeof proxy>, c = claude(), o: { login?: Login | null; needs?: Manifest[] } = {}) =>
   new DirectSession(o.needs ?? [calendar], c.open as never, { login: () => (o.login === undefined ? login : o.login ?? undefined), fetch: p.fetch });
 
-afterEach(() => { delete process.env.PLUGBOARD_DIRECT; delete process.env.CLAUDE_CONFIG_DIR; });
+afterEach(() => { delete process.env.PLUGBOARD_DIRECT; delete process.env.PLUGBOARD_TRANSPORT; delete process.env.CLAUDE_CONFIG_DIR; });
 
 test("a call goes to the connector proxy only, with the login, and never starts Claude Code", async () => {
   const p = proxy(ok()), c = claude(), s = session(p, c);
@@ -116,13 +116,48 @@ test("a tool's own error and a JSON-RPC error come back as errors, without a fal
   expect(c.opened()).toBe(0);
 });
 
-test("on by default; PLUGBOARD_DIRECT=0 or a custom CLAUDE_CONFIG_DIR turns it off", () => {
-  expect(directEnabled()).toBe(true);
-  process.env.PLUGBOARD_DIRECT = "0";
-  expect(directEnabled()).toBe(false);
-  delete process.env.PLUGBOARD_DIRECT;
-  process.env.CLAUDE_CONFIG_DIR = "/tmp/elsewhere";
-  expect(directEnabled()).toBe(false);
+describe("transport", () => {
+  const policy = (transport?: string) => ({ transport } as never);
+  afterEach(() => { delete process.env.PLUGBOARD_TRANSPORT; });
+  test("auto by default; the narrowest setting wins: the call's, the environment's, then the policy's", () => {
+    expect(resolveTransport(policy())).toBe("auto");
+    expect(resolveTransport(policy("claude-code"))).toBe("claude-code");
+    process.env.PLUGBOARD_TRANSPORT = "direct";
+    expect(resolveTransport(policy("claude-code"))).toBe("direct");
+    expect(resolveTransport(policy("claude-code"), "auto")).toBe("auto");
+  });
+  test("PLUGBOARD_DIRECT=0, from 0.1.3, still means claude-code", () => {
+    process.env.PLUGBOARD_DIRECT = "0";
+    expect(resolveTransport(policy())).toBe("claude-code");
+  });
+  test("a custom CLAUDE_CONFIG_DIR keeps auto on Claude Code: where it keeps the login is unverified", () => {
+    process.env.CLAUDE_CONFIG_DIR = "/tmp/elsewhere";
+    expect(resolveTransport(policy())).toBe("claude-code");
+    expect(resolveTransport(policy("direct"))).toBe("direct");
+  });
+  test("an unknown value is a usage error naming the values", () => {
+    process.env.PLUGBOARD_TRANSPORT = "fast";
+    expect(() => resolveTransport(policy())).toThrow(/auto, direct, claude-code/);
+  });
+  test("direct never starts Claude Code: a refusal, or no login, is UNREACHABLE and recorded as not sent", async () => {
+    const c = claude();
+    const refused = new DirectSession([calendar], c.open as never, { login: () => login, fetch: proxy(() => new Response("no", { status: 401 })).fetch }, { fallback: false });
+    const e1 = await refused.request<unknown>(CALL).catch(e => e) as { code: string; message: string };
+    expect(e1.code).toBe("UNREACHABLE");
+    expect(e1.message).toContain("401");
+    const { wasNotSent } = await import("../src/errors");
+    expect(wasNotSent(e1)).toBe(true);
+    const nologin = new DirectSession([calendar], c.open as never, { login: () => undefined, fetch: proxy(ok()).fetch }, { fallback: false });
+    expect((await nologin.waitForServers().catch(e => e)).code).toBe("UNREACHABLE");
+    expect(c.opened()).toBe(0);
+  });
+});
+
+test("via: a result the proxy served says direct; one Claude Code served says claude-code", async () => {
+  const direct = await session(proxy(ok())).request<object>(CALL);
+  expect(viaOf(direct)).toBe("direct");
+  const fell = await session(proxy(() => new Response("no", { status: 404 }))).request<object>(CALL);
+  expect(viaOf(fell)).toBe("claude-code");
 });
 
 test("connect gives a session that needs connectors the direct path (no login read until it's used); off, it starts Claude Code", async () => {
@@ -131,7 +166,7 @@ test("connect gives a session that needs connectors the direct path (no login re
   expect(await connect(parsePolicy("", "policy.toml"), [calendar])).toBeInstanceOf(DirectSession);
   process.env.PLUGBOARD_DIRECT = "0";
   const off = await connect(parsePolicy("claude_path = \"/nonexistent/claude\"", "policy.toml"), [calendar]).catch(e => e);
-  expect(off.code).toBe("BRIDGE_BROKEN"); // it tried to start Claude Code
+  expect(off.code).toBe("UNREACHABLE"); // it tried to start Claude Code
 });
 
 // Real fetch against a loopback server: the answer's headers arrive in time, its body doesn't.

@@ -3,7 +3,7 @@ import type { Manifest } from "./cache";
 import { encode } from "@toon-format/toon";
 import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
-import { asAxiError, EXIT, fail, retryAfterMs, type Code } from "./errors";
+import { asPlugboardError, EXIT, fail, retryAfterMs, type Code } from "./errors";
 import { parseDeadline, prepare, profileName, requireManifest, requireTool, type Prepared } from "./call";
 import { callRead, requireConnected, type Session } from "./core";
 import { fileOf, itemCount, parseList, shape } from "./output";
@@ -17,8 +17,8 @@ export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; err
 
 /** An error as a batch line reports it, its hints kept. */
 const errorOf = (error: unknown): Failure => {
-  const e = asAxiError(error, "UPSTREAM_ERROR");
-  return { code: e.code as Code, message: e.message, ...(e.suggestions.length ? { help: e.suggestions } : {}) };
+  const e = asPlugboardError(error, "UPSTREAM_ERROR");
+  return { code: e.code as Code, message: e.message, ...(e.hints.length ? { help: e.hints } : {}) };
 };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -64,7 +64,11 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
 
   const failAll = (list: Task[], failure: Failure) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { ...failure, retryable: false } }); };
   let client: Client;
-  try { client = await makeClient(tasks.map(t => t.p.manifest)); } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
+  try { client = await makeClient(tasks.map(t => t.p.manifest)); } catch (error) {
+    const e = asPlugboardError(error, "UNREACHABLE");
+    failAll(tasks, errorOf(e));
+    return e.exitCode;
+  }
 
   let stopped: Failure | undefined; // a broken bridge, or a model reached: the rest of the batch fails with it
   try {
@@ -78,7 +82,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
       for (const t of tasks) if (!blind.has(t.p.manifest.connectorName)) {
         try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error)); }
       }
-    } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
+    } catch (error) { failAll(tasks, { ...errorOf(error), code: "UNREACHABLE" }); return EXIT.UNREACHABLE; }
 
     const queue = [...tasks];
     const active = new Map<string, number>();
@@ -111,7 +115,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
         } catch (error) {
           const e = errorOf(error);
           const name = t.p.manifest.connectorName;
-          if (e.code === "BRIDGE_BROKEN") stopped ??= { code: "BRIDGE_BROKEN", message: "Bridge failed during the batch" };
+          if (e.code === "UNREACHABLE") stopped ??= { code: "UNREACHABLE", message: "Bridge failed during the batch" };
           if (e.code === "COST_GUARD") stopped ??= { ...e, message: `Stopped: ${e.message}` };
           if (e.code === "AUTH_REQUIRED") blind.set(name, e);
           const again = (e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2);

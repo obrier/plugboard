@@ -20,11 +20,26 @@ export type Login = { accessToken: string; expiresAt?: number; scopes?: string[]
 type Client = Pick<ClaudeConnectors, "request" | "waitForServers" | "close">;
 export type DirectDeps = { login: () => Login | undefined; fetch: typeof fetch };
 
-/** On unless PLUGBOARD_DIRECT=0. Off with a custom CLAUDE_CONFIG_DIR, where Claude Code may keep its login
- * under another name (unverified). */
-export function directEnabled(env = process.env) {
-  return env.PLUGBOARD_DIRECT !== "0" && !env.CLAUDE_CONFIG_DIR;
+/** How a call reaches its connector: direct to the proxy with Claude Code as the fallback (auto), direct only, or
+ * always through Claude Code. A result's `via` names the path that served it, in the same words. */
+export const TRANSPORTS = ["auto", "direct", "claude-code"] as const;
+export type Transport = (typeof TRANSPORTS)[number];
+export type Via = Exclude<Transport, "auto">;
+
+/** The narrowest setting wins: the call's (or the instance's), PLUGBOARD_TRANSPORT, then the policy's `transport`.
+ * PLUGBOARD_DIRECT=0 (0.1.3) still means claude-code. Auto stays on Claude Code with a custom CLAUDE_CONFIG_DIR, where
+ * Claude Code may keep its login under another name (unverified). */
+export function resolveTransport(policy: { transport?: Transport }, override?: Transport, env = process.env): Transport {
+  const fromEnv = env.PLUGBOARD_TRANSPORT || (env.PLUGBOARD_DIRECT === "0" ? "claude-code" : undefined);
+  const chosen = override ?? fromEnv ?? policy.transport ?? "auto";
+  if (!TRANSPORTS.includes(chosen as Transport))
+    throw fail("VALIDATION_ERROR", `Unknown transport "${chosen}" (one of ${TRANSPORTS.join(", ")})`, ["Set it in policy.toml or PLUGBOARD_TRANSPORT"]);
+  return chosen === "auto" && env.CLAUDE_CONFIG_DIR ? "claude-code" : chosen as Transport;
 }
+
+/** Results the proxy served, as against Claude Code: `via` without changing the result's shape. */
+const served = new WeakSet<object>();
+export const viaOf = (result: object): Via => (served.has(result) ? "direct" : "claude-code");
 
 /** Claude Code's claude.ai login, where it keeps it: the macOS keychain, or ~/.claude/.credentials.json elsewhere.
  * Read for each session, in memory only, never written or printed. */
@@ -50,7 +65,8 @@ const mayHaveRun = (what: string) => fail("TIMEOUT", `Timed out waiting for mcp_
 /** A session that calls connectors direct, and starts Claude Code only when it has to: no usable login, a login
  * expiring within a minute, a connector without a cached ID, or a request the proxy refused before the tool ran
  * (HTTP 400, 401, 403, 404, or no connection). After a send nothing falls back: a timeout, a 5xx or a 429 is
- * reported as it is, so a write is never sent twice. Once fallen back, the rest of the session is Claude Code's. */
+ * reported as it is, so a write is never sent twice. Once fallen back, the rest of the session is Claude Code's.
+ * With `fallback: false` (transport "direct") it never starts Claude Code: what would fall back is UNREACHABLE. */
 export class DirectSession {
   private login?: Login;
   private readonly tools = new Map<string, { id?: string; name: string; manifest: Manifest }>();
@@ -61,7 +77,8 @@ export class DirectSession {
   private discovered: ConnectorServer[] = []; // Claude Code's list once it started, for the same check as without the direct path
   private readonly clientSession = crypto.randomUUID();
 
-  constructor(private readonly needs: Manifest[], private readonly openClaude: () => Promise<Client>, private readonly deps: DirectDeps = { login: readLogin, fetch }) {
+  constructor(private readonly needs: Manifest[], private readonly openClaude: () => Promise<Client>, private readonly deps: DirectDeps = { login: readLogin, fetch },
+    private readonly options: { fallback?: boolean } = {}) {
     for (const m of needs) for (const t of m.tools) this.tools.set(t.sourceName, { id: typeof m.server?.id === "string" ? m.server.id : undefined, name: t.name, manifest: m });
   }
 
@@ -84,6 +101,9 @@ export class DirectSession {
   private fallback(reason?: string): Promise<Client> {
     if (this.direct) this.notDirect = reason;
     this.direct = false;
+    if (this.options.fallback === false) return Promise.reject(markNotSent(fail("UNREACHABLE",
+      `The transport is "direct" and ${this.notDirect ?? "the connector proxy can't serve this call"}`,
+      ["Set the transport to auto to let Claude Code make the call", "Run `plugboard doctor` for details"])));
     return (this.claude ??= this.openClaude().then(async client => {
       this.discovered = await client.waitForServers([...new Set(this.needs.map(m => m.connectorName))]);
       return client;
@@ -100,7 +120,7 @@ export class DirectSession {
     if (request.subtype === "mcp_call") {
       const tool = this.tools.get(String(request.tool));
       let refused: string | undefined;
-      if (tool?.id && this.isDirect()) {
+      if (this.isDirect() && tool?.id) {
         try { return await this.call({ id: tool.id, name: tool.name }, request.arguments, options.timeoutMs ?? 35_000) as T; } catch (error) {
           if (!(error instanceof Refused)) throw error;
           refused = error.message;
@@ -150,7 +170,8 @@ export class DirectSession {
     if (!res.ok) throw new Error(`connector proxy ${res.status}: ${text.slice(0, 200)}`);
     const message = parse(text, res.headers.get("content-type") ?? "");
     if (message?.error) throw new Error(String(message.error.message ?? "connector proxy error"));
-    if (!message || typeof message.result !== "object") throw new Error("connector proxy: no result in the answer");
+    if (!message || typeof message.result !== "object" || message.result === null) throw new Error("connector proxy: no result in the answer");
+    served.add(message.result);
     return message.result as Record<string, unknown>;
   }
 }

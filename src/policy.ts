@@ -4,12 +4,15 @@ import { expandHome, policyPath, transformsPath } from "./platform";
 import DEFAULTS from "./defaults.toml";
 import { parse as parseTomlText } from "smol-toml";
 import type { ManifestTool } from "./cache";
+import { TRANSPORTS, type Transport } from "./direct";
 
 export type Mode = "read" | "write";
 export type Profile = { mode: Mode; allow: string[]; deny: string[]; allowDestructive: boolean; allowInAgent: boolean };
 export type Policy = {
   source: string | null;
   claudePath?: string;
+  /** How calls reach their connectors (`resolveTransport`); unset is auto. */
+  transport?: Transport;
   aliases: Record<string, string>;
   overrides: { read: string[]; write: string[] };
   transforms: Record<string, string>;
@@ -82,6 +85,7 @@ export function parsePolicy(text: string, path: string, transformsFile?: { text:
   return {
     source: path,
     claudePath: typeof raw.claude_path === "string" ? expandHome(raw.claude_path) : undefined,
+    transport: transportOf(path, raw.transport),
     aliases,
     overrides: {
       read: strings(path, "overrides.read", raw.overrides?.read).map(pattern("overrides.read")),
@@ -91,6 +95,12 @@ export function parsePolicy(text: string, path: string, transformsFile?: { text:
     limits: { concurrency: raw.limits?.concurrency ?? 4, perConnector: raw.limits?.per_connector ?? 2 },
     profiles,
   };
+}
+
+function transportOf(path: string, value: unknown): Transport | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && (TRANSPORTS as readonly string[]).includes(value)) return value as Transport;
+  throw fail("VALIDATION_ERROR", `${path}: transport must be one of ${TRANSPORTS.join(", ")}`, [`Edit ${path}`]);
 }
 
 export function loadPolicy(): Policy {
