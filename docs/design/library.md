@@ -133,3 +133,22 @@ const all = await Array.fromAsync(batch(requests, { ordered: true }));
 - Reads only: a write tool is refused for its line. A write is one approved plan, sent with `write()`.
 - The options are today's: `concurrency`, a per-connector limit, `ordered`, a time budget; rate limits and read timeouts are retried as today.
 - One batch in the core: the CLI adds only reading stdin and printing JSON lines.
+
+## 7. Packaging
+
+Chosen 2026-11-05, over regular npm dependencies and over shipping the CLI on npm too.
+
+- `@obrier/plugboard` on npm is the library only: ESM, with TypeScript types. The CLI stays a Homebrew binary.
+- Its four runtime dependencies (`ajv`, `ajv-formats`, `chrono-node`, `smol-toml`) are bundled in, at the lockfile's versions: installing it fetches nothing else. The CLI's own (`@toon-format/toon`, `filtrex`, `axi-sdk-js`) stay out: with `PlugboardError`, the core no longer needs `axi-sdk-js`.
+- Node ≥ 22 (CI's oldest, the first with `Array.fromAsync`) and Bun ≥ 1.4.
+- One version for both: the `v*` tag that releases Homebrew also publishes to npm, with provenance. It needs an npm token for `@obrier` in the repo's secrets.
+
+## Implementation, in order
+
+Each a PR with tests and a review; the first two change what the CLI shows, so they ship in 0.2.0 with a release note.
+
+1. **Errors and transport.** `PlugboardError` in the core (the CLI turns it into AXI output); `BRIDGE_BROKEN` → `UNREACHABLE`; the `transport` setting (call, instance, `PLUGBOARD_TRANSPORT`, policy), `PLUGBOARD_DIRECT=0` read as `claude-code` for one release; `via` on every result.
+2. **The shared session.** Takes connectors on demand; a Claude Code fallback closes itself when idle and on exit; the login's expiry is checked before each direct call and the login read again when close.
+3. **The library API.** `call`, `plan`, `write` and `createPlugboard`, with the default instance; a plan carries its request; the package's `exports`, build and types.
+4. **Batch as a stream.** The core's batch takes and gives async iterables; the CLI reads stdin line by line.
+5. **Publishing.** The release workflow publishes to npm with provenance; then 0.2.0.
