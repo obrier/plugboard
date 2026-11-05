@@ -131,7 +131,8 @@ plugboard batch --as reader --concurrency 4 < calls.jsonl > results.jsonl
 ```
 
 Each output line is `{"id","ok":true,"ms","result"}` or `{"id","ok":false,"error":{"code","message","retryable","help"?}}`, `help` holding the failure's hints when it has any.
-- **Failures stay local:** a bad line fails on its own, without stopping the batch.
+- **Streaming:** lines are read as they arrive and each result is printed when it's done (in input order with `--ordered`), so a producer can feed it while results come back.
+- **Failures stay local:** a bad line fails on its own, without stopping the batch. Only a broken session (`UNREACHABLE`) or a model reached (`COST_GUARD`) stops it: the lines still to come fail unsent.
 - **Rate limits:** a 429 backs off and drops that connector to one call at a time.
 - **Auth failures:** one auth failure fails the rest of that connector's lines at once.
 - **Reads only:** batch never runs write tools.
@@ -177,6 +178,16 @@ const sent = await write(p, { key: "reply-42", profile: "executor" }); // { sent
 - Errors are `PlugboardError`, with the CLI's `code`, `hints` and `exitCode`.
 - The module functions share one session that takes connectors on as they're called and never keeps your program from exiting. `createPlugboard({ policy, profile, transport })` makes another instance; `close()` ends a session early.
 - Each call takes `profile`, `timeoutMs`, `signal` and `transport`.
+- `batch()` takes any iterable or async iterable of calls, each with an optional `id`, and gives results as they finish (in input order with `{ ordered: true }`). Each is `{ id, ok: true, value, raw, via }` or `{ id, ok: false, error }`; options are `concurrency`, `perConnector`, `ordered` and `budgetMs`. Leaving the loop cancels the lines still running.
+
+```ts
+import { batch } from "@obrier/plugboard";
+
+for await (const r of batch([{ id: "today", connector: "google-calendar", tool: "list_events", args: { calendarId: "primary" } }])) {
+  if (r.ok) console.log(r.id, r.value);
+  else console.warn(r.id, r.error.code, r.error.hints);
+}
+```
 
 ## Safety model
 

@@ -410,12 +410,6 @@ describe("full results on disk", () => {
     expect(encode(s).length).toBeLessThanOrEqual(15_000 + 2_000); // the budget, plus help lines
   }));
 
-  test("a cost-guard failure is its own field, not a result row", () => withState(() => {
-    const s = axiSummary([ok("a", { v: 1 }), { id: null, ok: false, error: { code: "COST_GUARD", message: "spent $0.01", retryable: false } }] as never);
-    expect(s.results).toHaveLength(1);
-    expect(s.error).toEqual({ code: "COST_GUARD", message: "spent $0.01" });
-  }));
-
   test("when results can't be written, nothing is lost: batch inlines them and a cut call keeps the --full hint", () => {
     const saved = process.env.PLUGBOARD_STATE;
     const file = join(mkdtempSync(join(tmpdir(), "plugboard-nodir-")), "a-file");

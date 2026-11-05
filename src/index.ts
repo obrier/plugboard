@@ -2,7 +2,8 @@
 // The module functions are a default instance, created on first use; createPlugboard() makes another, with its
 // own policy, profile, transport and session. Every call goes through the core, as the CLI's do.
 import { connectClaude } from "./claude";
-import { callRead, callWrite, planCall, type Plan } from "./core";
+import { callBatch, callRead, callWrite, planCall, type Plan } from "./core";
+import type { PlugboardError } from "./errors";
 import { DirectSession, resolveTransport, type Transport, type Via } from "./direct";
 import { fail } from "./errors";
 import { requireManifest, requireTool } from "./prepare";
@@ -44,6 +45,20 @@ export type WriteOptions = {
 export type Written =
   | { sent: true; key: string; ref: string | null; value: unknown; raw: Record<string, unknown>; via: Via }
   | { replayed: true; key: string; ref: string | null; at?: string };
+/** A batch line: a call, with an id to tell its result by (its input position by default). */
+export type BatchCall = Call & { id?: unknown };
+export type BatchOptions = {
+  /** Lines running at once: the policy's limits.concurrency (4) by default. */
+  concurrency?: number;
+  /** Lines running at once on one connector: the policy's limits.per_connector (2) by default. */
+  perConnector?: number;
+  /** Results in input order; completion order by default. */
+  ordered?: boolean;
+  /** Once spent, the lines not yet started fail with TIMEOUT, unsent. None by default. */
+  budgetMs?: number;
+};
+/** A line's result: a failure is a result too, never an exception. */
+export type BatchRead = { id: unknown; ok: true; value: unknown; raw: Record<string, unknown>; via: Via } | { id: unknown; ok: false; error: PlugboardError };
 export type PlugboardOptions = {
   /** A policy file; PLUGBOARD_POLICY's, or the default location, otherwise. Read once, on first use. */
   policy?: string;
@@ -59,6 +74,9 @@ export type Plugboard = {
   /** Sends an approved plan once under this key. Nothing in the plan is trusted: its request is planned again and
    * sent only if the hash still matches. */
   write(plan: WritePlan, options: WriteOptions): Promise<Written>;
+  /** Reads, as they arrive, results as they come: UNREACHABLE or COST_GUARD fails the lines still to come and ends
+   * it; leaving the loop cancels the lines still running. A write tool is refused for its line. */
+  batch(lines: Iterable<BatchCall> | AsyncIterable<BatchCall>, options?: BatchOptions): AsyncGenerator<BatchRead, void, undefined>;
   /** Closes the instance's sessions now, rather than when idle. */
   close(): Promise<void>;
 };
@@ -110,6 +128,16 @@ export function createPlugboard(options: PlugboardOptions = {}): Plugboard {
       return { sent: true, key: out.key, ref: out.ref, value: out.value, raw: out.raw, via: out.via };
     },
 
+    async *batch(lines, o = {}) {
+      const pol = loaded();
+      const settings = { profile: profileOf(), concurrency: o.concurrency ?? pol.limits.concurrency, perConnector: o.perConnector ?? pol.limits.perConnector,
+        ordered: o.ordered === true, budgetMs: o.budgetMs };
+      for (const [name, n] of [["concurrency", settings.concurrency], ["perConnector", settings.perConnector]] as const)
+        if (!Number.isInteger(n) || n < 1) throw fail("VALIDATION_ERROR", `${name} must be a positive whole number`);
+      for await (const r of callBatch((line: BatchCall) => opener(transportOf(line.transport)), pol, lines, settings))
+        yield r.ok ? { id: r.id, ok: true, value: r.value, raw: r.raw, via: r.via } : { id: r.id, ok: false, error: r.error };
+    },
+
     async close() {
       const open = [...sessions.values()];
       sessions.clear();
@@ -126,5 +154,7 @@ export const call: Plugboard["call"] = request => instance().call(request);
 export const plan: Plugboard["plan"] = request => instance().plan(request);
 /** Sends an approved plan through the default instance. */
 export const write: Plugboard["write"] = (p, options) => instance().write(p, options);
+/** A batch of reads through the default instance. */
+export const batch: Plugboard["batch"] = (lines, options) => instance().batch(lines, options);
 /** Closes the default instance's sessions now, rather than when idle. */
 export const close = () => shared?.close() ?? Promise.resolve();

@@ -33,11 +33,12 @@ try {
 
   // Its types, from a consumer with Node's types only.
   run(["npm", "install", "--no-audit", "--no-fund", "typescript@5", "@types/node@22"], project);
-  writeFileSync(join(project, "consumer.ts"), `import { call, close, createPlugboard, plan, write, PlugboardError, type Read, type WritePlan, type Written } from "@obrier/plugboard";
+  writeFileSync(join(project, "consumer.ts"), `import { batch, call, close, createPlugboard, plan, write, PlugboardError, type BatchRead, type Read, type WritePlan, type Written } from "@obrier/plugboard";
 const r: Read = await call({ connector: "gcal", tool: "list_calendars", signal: AbortSignal.timeout(1_000) });
 const p: WritePlan = plan({ connector: "slack", tool: "send_message", args: { channel_id: "D1", message: "hi" }, profile: "executor" });
 const w: Written = await write(JSON.parse(JSON.stringify(p)) as WritePlan, { key: "reply-42" });
 if ("sent" in w) console.log(w.value, w.via, r.via);
+for await (const b of batch([{ id: 1, connector: "gcal", tool: "list_calendars" }], { ordered: true })) { const one: BatchRead = b; if (!one.ok) console.log(one.error.code); }
 const pb = createPlugboard({ transport: "direct", profile: "reader" });
 try { await pb.call({ connector: "x", tool: "y" }); } catch (e) { if (e instanceof PlugboardError) console.log(e.code, e.hints, e.exitCode); }
 await pb.close();

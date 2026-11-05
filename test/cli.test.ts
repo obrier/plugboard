@@ -200,6 +200,27 @@ test("batch: per-line results, 429 backoff, auth fail-fast, writes refused, bad 
   expect(calls().filter(c => c.args.query === "ratelimit")).toHaveLength(3);
 }, 20_000);
 
+test("batch reads stdin line by line: a line's result is out before the next line is written", async () => {
+  const env: Record<string, string | undefined> = { ...process.env, PLUGBOARD_CACHE: join(root, "cache"), PLUGBOARD_STATE: join(root, "state"),
+    PLUGBOARD_POLICY: join(root, "policy.toml"), PLUGBOARD_TRANSFORMS: join(root, "transforms.toml"), PLUGBOARD_CLAUDE: join(import.meta.dir, "fixtures/fake-claude.ts"), FAKE_DIR: fake, PLUGBOARD_DIRECT: "0" };
+  delete env.CLAUDECODE;
+  delete env.PLUGBOARD_PROFILE;
+  const proc = Bun.spawn(["bun", cli, "batch", "--as", "gather"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const reader = proc.stdout.getReader();
+  const nextLine = async () => {
+    let text = "";
+    while (!text.includes("\n")) { const { value, done } = await reader.read(); if (done) break; text += new TextDecoder().decode(value); }
+    return JSON.parse(text.trim());
+  };
+  proc.stdin.write(`${JSON.stringify({ id: "first", connector: "slack", tool: "search-public", args: { query: "one" } })}\n`);
+  proc.stdin.flush();
+  expect(await nextLine()).toMatchObject({ id: "first", ok: true }); // stdin is still open
+  proc.stdin.write(`${JSON.stringify({ id: "second", connector: "slack", tool: "search-public", args: { query: "two" } })}\n`);
+  proc.stdin.end();
+  expect(await nextLine()).toMatchObject({ id: "second", ok: true });
+  expect(await proc.exited).toBe(0);
+}, 20_000);
+
 test("batch: an auth failure fails the rest of that connector fast", async () => {
   const lines = ["auth", "two", "three"].map(q => JSON.stringify({ id: q, connector: "slack", tool: "search-public", args: { query: q } })).join("\n");
   const r = await run(["batch", "--as", "gather", "--ordered", "--concurrency", "1"], { stdin: lines });
@@ -477,7 +498,8 @@ describe("transport", () => {
     const line = JSON.stringify({ id: "a", connector: "slack", tool: "search-public", args: { query: "x" } });
     const typo = await run(["batch", "--as", "gather"], { stdin: line, env: { PLUGBOARD_TRANSPORT: "drect" } });
     expect(typo.code).toBe(2);
-    expect(JSON.parse(typo.stdout.trim()).error.code).toBe("VALIDATION_ERROR");
+    expect(typo.all).toContain("VALIDATION_ERROR"); // before any line is read, as a bad --concurrency
+    expect(typo.all).not.toContain("UNREACHABLE");
     const empty = await run(["batch", "--as", "gather"], { stdin: line, env: { PLUGBOARD_TRANSPORT: "" } });
     expect(empty.code).toBe(0); // unset: PLUGBOARD_DIRECT=0 from run() applies, so the fake Claude Code serves it
   });
