@@ -13,14 +13,14 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test # offline: the CLI tests drive test/fixtures/fake-claude.ts, never a real account
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22 # the library's oldest supported Node
       - name: The bridge on real Node (offline, against the fake Claude Code)
@@ -39,7 +39,7 @@ jobs:
       - name: Keep LF line endings (the test fixtures are shebang scripts)
         shell: pwsh
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Vampire/setup-wsl@v7
         with:
           distribution: Ubuntu-24.04
