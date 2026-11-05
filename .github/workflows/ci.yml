@@ -25,6 +25,8 @@ jobs:
           node-version: 22 # the library's oldest supported Node
       - name: The bridge on real Node (offline, against the fake Claude Code)
         run: bun build scripts/node-bridge-check.ts --target=node --outfile=dist/node-bridge-check.mjs && node dist/node-bridge-check.mjs
+      - name: Long-lived signals on real Node (a long batch and many direct calls stay flat in memory and time)
+        run: bun build scripts/node-signals-check.ts --target=node --outfile=dist/node-signals-check.mjs && node --expose-gc dist/node-signals-check.mjs
       - name: The npm package on real Node (packed, installed, its types checked, a read against the fake Claude Code)
         run: bun scripts/package-check.ts
 
