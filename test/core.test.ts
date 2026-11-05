@@ -283,3 +283,32 @@ test("a session is opened for the connector the call names: a shared session tak
   await callRead(async m => { opened.push(m.id); return s.session; }, policy, "default", search, 1_000);
   expect(opened).toEqual(["slack"]);
 });
+
+test("a write cancelled before it starts opens no session and records nothing", async () => {
+  const s = fakeSession();
+  const before = readAudit().length;
+  const plan = planCall(policy, "executor", send);
+  const error = await callWrite(s.open, policy, send, { profile: "executor", key: "k-cancel", expectHash: plan.hash, deadlineMs: 1_000, signal: AbortSignal.abort() }).catch(e => e);
+  expect(error.code).toBe("TIMEOUT");
+  expect(s.opened()).toBe(0);
+  expect(readAudit().length).toBe(before);
+});
+
+test("a write cancelled after its claim, before the send, is recorded as an error: never unknown, never sent", async () => {
+  const cancel = new AbortController();
+  const s = fakeSession();
+  const session: Session = {
+    waitForServers: s.session.waitForServers,
+    request: async (request: any, options?: { signal?: AbortSignal }) => {
+      cancel.abort(); // between the claim and the send
+      const { markNotSent, fail } = await import("../src/errors");
+      if (options?.signal?.aborted) throw markNotSent(fail("TIMEOUT", "Cancelled before mcp_call was sent"));
+      return s.session.request(request);
+    },
+  };
+  const plan = planCall(policy, "executor", send);
+  const error = await callWrite(async () => session, policy, send, { profile: "executor", key: "k-mid", expectHash: plan.hash, deadlineMs: 1_000, signal: cancel.signal }).catch(e => e);
+  expect(error.code).toBe("TIMEOUT");
+  expect(readAudit().filter(e => e.key === "k-mid").map(e => e.status)).toEqual(["attempt", "error"]);
+  expect(s.sent).toHaveLength(0);
+});

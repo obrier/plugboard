@@ -78,7 +78,8 @@ const EXPIRING_MS = 60_000;
  * It lasts as long as its user wants: connectors are taken on as they're first called (`use`), each call decides
  * again (a login near expiry is read again first), and a connector the proxy refused stays with Claude Code. Claude
  * Code, once started, closes itself after `idleMs` without a call and starts again when one needs it.
- * With `fallback: false` (transport "direct") it never starts Claude Code: what would fall back is UNREACHABLE. */
+ * Under the transport "direct" it never starts Claude Code: what would fall back is UNREACHABLE. Under "claude-code"
+ * every call goes through Claude Code, without reading the login. */
 export class DirectSession {
   private login?: Login; // the login last read
   private refusedToken?: string; // a login the proxy answered 401 to: not sent again
@@ -98,7 +99,7 @@ export class DirectSession {
   private readonly clientSession = crypto.randomUUID();
 
   constructor(needs: Manifest[], private readonly openClaude: () => Promise<Client>, private readonly deps: DirectDeps = { login: readLogin, fetch },
-    private readonly options: { fallback?: boolean; idleMs?: number } = {}) {
+    private readonly options: { transport?: Transport; idleMs?: number } = {}) {
     this.use(needs);
   }
 
@@ -120,6 +121,7 @@ export class DirectSession {
   /** Why calls to these connectors (all taken on, by default) can't go direct now, or nothing when they can:
    * what a call checks first, without a request. */
   unusable(manifests = this.manifests): string | undefined {
+    if (this.options.transport === "claude-code") return "the transport is claude-code";
     for (const m of manifests) { const why = this.connectorProblem(m); if (why) return why; }
     return this.loginProblem();
   }
@@ -166,7 +168,7 @@ export class DirectSession {
   /** A call through Claude Code, for this reason: refused under the transport direct. */
   private fallback(reason: string): Promise<Client> {
     this.notDirect = reason;
-    if (this.options.fallback === false) return Promise.reject(markNotSent(fail("UNREACHABLE", `The transport is "direct" and ${reason}`,
+    if (this.options.transport === "direct") return Promise.reject(markNotSent(fail("UNREACHABLE", `The transport is "direct" and ${reason}`,
       ["Set the transport to auto to let Claude Code make the call", "Run `plugboard doctor` for details"])));
     return this.client();
   }
@@ -220,14 +222,15 @@ export class DirectSession {
     return needs.map(m => ({ name: m.connectorName, status: "connected", config: m.server, tools: m.tools.map(t => ({ name: t.name })) }));
   }
 
-  async request<T = Record<string, unknown>>(request: ControlRequest, options: { timeoutMs?: number } = {}): Promise<T> {
+  async request<T = Record<string, unknown>>(request: ControlRequest, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
     if (request.subtype === "mcp_call") {
+      if (options.signal?.aborted) throw markNotSent(fail("TIMEOUT", "Cancelled before mcp_call was sent"));
       const tool = this.tools.get(String(request.tool));
       let why = tool ? this.unusable([tool.manifest]) : `${String(request.tool)} isn't a tool of this session's connectors`;
       if (!why && tool?.id) {
         this.notDirect = undefined;
         const token = this.login!.accessToken;
-        try { return await this.call({ id: tool.id, name: tool.name }, request.arguments, options.timeoutMs ?? 35_000) as T; } catch (error) {
+        try { return await this.call({ id: tool.id, name: tool.name }, request.arguments, options.timeoutMs ?? 35_000, options.signal) as T; } catch (error) {
           if (!(error instanceof Refused)) throw error;
           why = error.message;
           if (error.status === 401) this.refusedToken = token;
@@ -269,7 +272,7 @@ export class DirectSession {
     await this.shut();
   }
 
-  private async call(tool: { id: string; name: string }, args: unknown, timeoutMs: number) {
+  private async call(tool: { id: string; name: string }, args: unknown, timeoutMs: number, cancel?: AbortSignal) {
     let res: Response;
     try {
       res = await this.deps.fetch(`${PROXY_ORIGIN}/v1/mcp/${tool.id}`, {
@@ -280,12 +283,13 @@ export class DirectSession {
           "X-Mcp-Client-Session-Id": this.clientSession, "User-Agent": `plugboard/${version}`,
         },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool.name, arguments: args ?? {} } }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       // Plugboard's own words only: a fetch error can quote the request's headers, and so the login.
       const e = error as Error & { code?: string; cause?: { code?: string } };
       const code = e.code ?? e.cause?.code;
+      if (cancel?.aborted) throw mayHaveRun("cancelled");
       if (NOT_SENT.has(code ?? "")) throw new Refused(`could not connect to the connector proxy (${code})`);
       if (e.name === "TimeoutError" || e.name === "AbortError") throw mayHaveRun("no answer in time");
       throw mayHaveRun(`the connection to the connector proxy failed (${code ?? e.name})`);
@@ -294,6 +298,7 @@ export class DirectSession {
     let text: string;
     try { text = await res.text(); } catch (error) {
       const e = error as Error & { code?: string; cause?: { code?: string } };
+      if (cancel?.aborted) throw mayHaveRun("cancelled");
       throw mayHaveRun(e.name === "TimeoutError" || e.name === "AbortError" ? "the answer didn't finish in time" : `the answer was cut off (${e.code ?? e.cause?.code ?? e.name})`);
     }
     if (!res.ok) throw new Error(`connector proxy ${res.status}: ${text.slice(0, 200)}`);

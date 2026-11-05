@@ -4,7 +4,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mergeCapture } from "../src/cache";
+import { writeConnectorCache } from "./fixtures/connectors";
 
 const root = mkdtempSync(join(tmpdir(), "plugboard-test-"));
 const fake = join(root, "fake");
@@ -30,23 +30,7 @@ beforeEach(() => {
   for (const dir of ["cache", "state", "fake"]) { rmSync(join(root, dir), { recursive: true, force: true }); mkdirSync(join(root, dir), { recursive: true }); }
   writeFileSync(join(root, "policy.toml"), POLICY);
   rmSync(join(root, "transforms.toml"), { force: true });
-  const servers = [
-    { name: "claude.ai Slack", status: "connected", config: { type: "claudeai-proxy", url: "https://mcp.slack.com/mcp", id: "mcpsrv_01slack" }, tools: [
-      { name: "slack_search_public", annotations: { readOnly: true } }, { name: "slack_send_message" },
-      { name: "slack_delete_message", annotations: { destructive: true } }, { name: "slack_create_note" }] },
-    { name: "claude.ai Gmail", status: "connected", tools: [{ name: "list_labels", annotations: { readOnly: true } }] },
-  ];
-  const schemas = [
-    { name: "mcp__claude_ai_Slack__slack_search_public", inputSchema: { type: "object", properties: { query: { type: "string" }, after: { type: "string" }, limit: { type: "integer" } } } },
-    { name: "mcp__claude_ai_Slack__slack_send_message", inputSchema: { type: "object", required: ["channel_id", "message"], properties: { channel_id: { type: "string" }, message: { type: "string" } } } },
-    { name: "mcp__claude_ai_Slack__slack_delete_message", inputSchema: { type: "object", properties: { ts: { type: "string" } } } },
-    { name: "mcp__claude_ai_Slack__slack_create_note", inputSchema: { type: "object", properties: { text: { type: "string" }, idempotency_key: { type: "string" } } } },
-    { name: "mcp__claude_ai_Gmail__list_labels", inputSchema: { type: "object", properties: {} } },
-  ];
-  const { index, manifests } = mergeCapture(undefined, servers as never, schemas);
-  mkdirSync(join(root, "cache/manifests"), { recursive: true });
-  writeFileSync(join(root, "cache/index.json"), JSON.stringify({ ...index, testedVersions: ["9.9.9"] }));
-  for (const m of manifests) writeFileSync(join(root, "cache/manifests", `${m.id}.json`), JSON.stringify(m));
+  writeConnectorCache(join(root, "cache"));
 });
 
 async function run(args: string[], o: { stdin?: string; env?: Record<string, string> } = {}) {
@@ -307,13 +291,17 @@ test("write handshake: --plan on the args file, then the write with that hash; a
   expect(calls()).toEqual([{ tool: "mcp__claude_ai_Slack__slack_send_message", args: { message: "approved text", channel_id: "D1" } }]);
 });
 
-test("a tool's own idempotency_key is filled from --write-key, in the plan hash and in the call", async () => {
+test("a tool's own idempotency_key is filled from --write-key in the call, outside the hash: the approval names the content", async () => {
   const note = ["slack", "create-note", "--text", "n"];
   const plan = JSON.parse((await run([...note, "--write-key", "out-7", "--plan", "--out", "json"])).stdout);
-  expect(plan.payload).toEqual({ text: "n", idempotency_key: "out-7" });
-  expect(plan.hash).not.toBe(await planHash(note)); // the key is part of what was approved
+  // The plan shows what it approves: the key is filled at send time, whichever key that is.
+  expect(plan.payload).toEqual({ text: "n" });
+  expect(plan.keyFills).toBe("idempotency_key");
+  expect(plan.hash).toBe(await planHash(note)); // planned without a key: the same approval
   expect((await run([...note, "--as", "executor", "--write", "--write-key", "out-7", "--expect-hash", plan.hash])).code).toBe(0);
   expect(calls()[0].args).toEqual({ text: "n", idempotency_key: "out-7" });
+  // An idempotency_key the caller writes is content: part of the hash.
+  expect(await planHash([...note, "--idempotency-key", "mine"])).not.toBe(plan.hash);
 });
 
 test("usage: counts only real tool calls, maps UUID-named connectors by tool name, then ranks and caps listings", async () => {

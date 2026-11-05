@@ -197,3 +197,15 @@ test("a request to a client whose Claude Code exited was never sent, and the cli
   const error = await client.request({ subtype: "mcp_status" }).catch(e => e);
   expect(wasNotSent(error)).toBe(true);
 });
+
+test("a request cancelled while waiting is a timeout, and one cancelled before it was sent is marked not sent", async () => {
+  const { wasNotSent } = await import("../src/errors");
+  const client = await connect();
+  const before = await client.request({ subtype: "mcp_status" }, { signal: AbortSignal.abort() }).catch(e => e);
+  expect(wasNotSent(before)).toBe(true);
+  const cancel = new AbortController();
+  setTimeout(() => cancel.abort(), 20);
+  const during = await client.request({ subtype: "mcp_call", tool: "x", arguments: { delay: 5_000 } }, { signal: cancel.signal }).catch(e => e);
+  expect(during.code).toBe("TIMEOUT");
+  expect(wasNotSent(during)).toBe(false);
+});

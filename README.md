@@ -158,6 +158,26 @@ help[2]: "1 result(s) not inlined (~12K tokens): read the files you need",…
 
 A single `--axi` call cuts strings at 1,500 characters; when it does, it writes the full result the same way and its hint names the file.
 
+## From code
+
+The same calls, with the same policy and safeguards, from TypeScript or JavaScript on Node 22+ or Bun 1.4+. The package, `@obrier/plugboard`, is published to npm from 0.2.0.
+
+```ts
+import { call, plan, write } from "@obrier/plugboard";
+
+const { value, via } = await call({ connector: "google-calendar", tool: "list_events", args: { calendarId: "primary" } });
+
+// A write: plan it, have its hash approved, then send it once under a key.
+const p = plan({ connector: "slack", tool: "send_message", args: { channel_id: "D1", message: "hi" }, profile: "executor" });
+const sent = await write(p, { key: "reply-42", profile: "executor" }); // { sent: true, key, ref, value } or { replayed: true, key, ref }
+```
+
+- `call()` only reads; it returns `value` (as the CLI prints it), `raw` (the MCP result) and `via` (`direct` or `claude-code`).
+- A plan is plain JSON and can be saved, approved and sent later. `write()` plans its request again and sends it only if the hash still matches, under the profile the sender names (or the instance's), never the one written in the plan.
+- Errors are `PlugboardError`, with the CLI's `code`, `hints` and `exitCode`.
+- The module functions share one session that takes connectors on as they're called and never keeps your program from exiting. `createPlugboard({ policy, profile, transport })` makes another instance; `close()` ends a session early.
+- Each call takes `profile`, `timeoutMs`, `signal` and `transport`.
+
 ## Safety model
 
 Plugboard is read-only unless you configure otherwise.

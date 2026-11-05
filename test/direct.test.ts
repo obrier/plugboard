@@ -141,13 +141,13 @@ describe("transport", () => {
   });
   test("direct never starts Claude Code: a refusal, or no login, is UNREACHABLE and recorded as not sent", async () => {
     const c = claude();
-    const refused = new DirectSession([calendar], c.open as never, { login: () => login, fetch: proxy(() => new Response("no", { status: 401 })).fetch }, { fallback: false });
+    const refused = new DirectSession([calendar], c.open as never, { login: () => login, fetch: proxy(() => new Response("no", { status: 401 })).fetch }, { transport: "direct" });
     const e1 = await refused.request<unknown>(CALL).catch(e => e) as { code: string; message: string };
     expect(e1.code).toBe("UNREACHABLE");
     expect(e1.message).toContain("401");
     const { wasNotSent } = await import("../src/errors");
     expect(wasNotSent(e1)).toBe(true);
-    const nologin = new DirectSession([calendar], c.open as never, { login: () => undefined, fetch: proxy(ok()).fetch }, { fallback: false });
+    const nologin = new DirectSession([calendar], c.open as never, { login: () => undefined, fetch: proxy(ok()).fetch }, { transport: "direct" });
     expect((await nologin.waitForServers().catch(e => e)).code).toBe("UNREACHABLE");
     expect(c.opened()).toBe(0);
   });
@@ -368,5 +368,36 @@ describe("the shared session, when Claude Code fails", () => {
     s.use([{ ...calendar, capturedAt: "2026-11-06T00:00:00Z", server: { ...calendar.server!, id: "mcpsrv_02cal" } }]);
     await s.request<unknown>(CALL);
     expect(p.sent[0]!.url).toBe(`${PROXY_ORIGIN}/v1/mcp/mcpsrv_02cal`);
+  });
+});
+
+describe("cancelling a call", () => {
+  test("cancelled before it was sent: nothing reaches the proxy, and it's marked not sent", async () => {
+    const { wasNotSent } = await import("../src/errors");
+    const p = proxy(ok()), s = session(p);
+    const error = await s.request<unknown>(CALL, { signal: AbortSignal.abort() }).catch(e => e);
+    expect(p.sent).toHaveLength(0);
+    expect(wasNotSent(error)).toBe(true);
+  });
+
+  test("cancelled after it was sent: a timeout, as the tool may have run, and nothing falls back", async () => {
+    const { wasNotSent } = await import("../src/errors");
+    const p = proxy(() => new Promise(() => {})), c = claude(), s = session(p, c);
+    const cancel = new AbortController();
+    setTimeout(() => cancel.abort(), 20);
+    const error = await s.request<unknown>(CALL, { signal: cancel.signal, timeoutMs: 5_000 }).catch(e => e) as { code: string; message: string };
+    expect(error.code).toBe("TIMEOUT");
+    expect(error.message).toContain("cancelled");
+    expect(wasNotSent(error)).toBe(false);
+    expect(c.opened()).toBe(0);
+  });
+
+  test("the transport claude-code reads no login and calls no proxy: every call goes through Claude Code", async () => {
+    let reads = 0;
+    const p = proxy(ok()), c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: () => { reads++; return login; }, fetch: p.fetch }, { transport: "claude-code" });
+    const result = await s.request<object>(CALL);
+    expect(viaOf(result)).toBe("claude-code");
+    expect(reads + p.sent.length).toBe(0);
   });
 });

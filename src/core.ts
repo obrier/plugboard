@@ -5,10 +5,10 @@ import { viaOf, type Via } from "./direct";
 import { appendAudit, claimKey, keyState, readAudit, type AuditEntry } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
-import { prepare, requireManifest, requireTool, type Prepared } from "./call";
+import { payloadHash, prepare, requireManifest, requireTool, type Prepared } from "./prepare";
 import { costGuard } from "./claude";
 import { asPlugboardError, classify as classifyError, fail, PlugboardError, wasNotSent, type Code } from "./errors";
-import { errorText, unwrap } from "./output";
+import { errorText, unwrap } from "./unwrap";
 import { classify, decide, profileFor, type Policy } from "./policy";
 
 import { BIN, requireConnected } from "./connected";
@@ -18,10 +18,10 @@ export { BIN, requireConnected };
 export type Session = Pick<ClaudeConnectors, "request" | "waitForServers">;
 export type OpenSession = (manifest: Manifest) => Promise<Session>;
 
-export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepared, deadlineMs: number) {
+export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepared, deadlineMs: number, signal?: AbortSignal) {
   let result: Record<string, any>;
   try {
-    result = await client.request({ subtype: "mcp_call", tool: p.tool.sourceName, arguments: p.args }, { timeoutMs: deadlineMs });
+    result = await client.request({ subtype: "mcp_call", tool: p.tool.sourceName, arguments: p.args }, { timeoutMs: deadlineMs, signal });
   } catch (error) {
     if (error instanceof PlugboardError) throw error; // a session that already knows what failed (the direct path) keeps its code
     const message = (error as Error).message;
@@ -49,36 +49,56 @@ export function refOf(value: unknown): string | undefined {
  * args itself, so what the policy judges, what was approved and what is sent are always the same call. */
 export type CallRequest = { connector: string; tool: string; args?: Record<string, unknown> };
 
+/** The tool's own idempotency_key, when the caller left it to the write key. */
+const keyFills = (tool: Prepared["tool"], args: Record<string, unknown> | undefined) =>
+  "idempotency_key" in (tool.inputSchema.properties ?? {}) && args?.idempotency_key === undefined ? "idempotency_key" as const : undefined;
+
 function mint(policy: Policy, req: CallRequest, key?: string): Prepared {
   const manifest = requireManifest(policy, req.connector);
   const tool = requireTool(manifest, req.tool);
   // Plain JSON once, before transforms, validation and the hash: the wire is JSON, so what is checked and
   // approved is exactly what is sent (no toJSON, getter or Date can change between the two).
   const args = JSON.parse(JSON.stringify(req.args ?? {})) as Record<string, unknown>;
-  // A tool with its own idempotency_key gets the write key, so the service refuses a duplicate too; part of the hash.
-  if (key && "idempotency_key" in (tool.inputSchema.properties ?? {}) && args.idempotency_key === undefined) args.idempotency_key = key;
-  return prepare(policy, manifest, tool, args, classify(policy, manifest.id, tool) === "write");
+  // A tool with its own idempotency_key gets the write key, so the service refuses a duplicate too. The key is
+  // validated and sent, but stays out of the hash: the approval names the content, and the key is chosen at send
+  // time (write(plan, { key })). One the caller wrote in the args is content, and hashed.
+  const keyed = key !== undefined && keyFills(tool, args) !== undefined;
+  if (keyed) args.idempotency_key = key;
+  const p = prepare(policy, manifest, tool, args, classify(policy, manifest.id, tool) === "write");
+  if (!keyed) return p;
+  const { idempotency_key: _, ...content } = p.args;
+  return { ...p, hash: payloadHash(manifest.id, tool.name, content, tool.sourceName) };
 }
 
-export type Plan = { connector: string; tool: string; class: string; destructive: boolean; profile: string; decision: string; hash: string; payload: Record<string, unknown> };
+export type Plan = {
+  connector: string; tool: string; class: string; destructive: boolean; profile: string; decision: string; hash: string;
+  /** What the hash names: the args as sent, but for a parameter the write key fills (`keyFills`). */
+  payload: Record<string, unknown>;
+  /** A parameter the write key fills when the write is sent, whichever key that is: outside the payload and the hash. */
+  keyFills?: "idempotency_key";
+};
 /** What a call would send and whether the profile allows it; a write's hash is what its approval names. */
 export function planCall(policy: Policy, profile: string, req: CallRequest, key?: string): Plan {
   const p = mint(policy, req, key);
   let decision = "allowed";
   try { decide(policy, profile, p.manifest.id, p.tool, p.cls === "write"); } catch (error) { decision = `denied: ${(error as Error).message}`; }
-  return { connector: p.manifest.id, tool: p.tool.name, class: p.cls, destructive: p.tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload: p.args };
+  const fills = keyFills(p.tool, req.args);
+  const payload = { ...p.args };
+  if (fills) delete payload[fills];
+  return { connector: p.manifest.id, tool: p.tool.name, class: p.cls, destructive: p.tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload, ...(fills ? { keyFills: fills } : {}) };
 }
 
 /** `via`: the path that served the call, the connector proxy direct or Claude Code. */
 export type ReadResult = { raw: Record<string, any>; value: unknown; via: Via };
 
 /** One read: the profile must allow it, the connector must be connected, and the session must stay zero-cost. */
-export async function callRead(open: OpenSession, policy: Policy, profile: string, req: CallRequest, deadlineMs: number): Promise<ReadResult> {
+export async function callRead(open: OpenSession, policy: Policy, profile: string, req: CallRequest, deadlineMs: number, signal?: AbortSignal): Promise<ReadResult> {
   const p = mint(policy, req);
   decide(policy, profile, p.manifest.id, p.tool, false);
-  const session = await open(p.manifest);
-  requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
-  const raw = await invoke(session, p, deadlineMs);
+  stopIfCancelled(signal, "Read");
+  const session = await beforeSend(open(p.manifest), signal, "Read");
+  requireConnected(await beforeSend(session.waitForServers([p.manifest.connectorName]), signal, "Read"), p.manifest);
+  const raw = await invoke(session, p, deadlineMs, signal);
   await costGuard(session);
   return { raw, value: unwrap(raw), via: viaOf(raw) };
 }
@@ -91,7 +111,24 @@ function inFlight(last: AuditEntry | undefined) {
   return Date.now() - Date.parse(last.ts) < deadline + 60_000;
 }
 
-export type WriteRequest = { profile: string; key: string; expectHash: string; deadlineMs: number };
+export type WriteRequest = { profile: string; key: string; expectHash: string; deadlineMs: number; signal?: AbortSignal };
+
+/** A call cancelled before it started: nothing was opened or sent. */
+function stopIfCancelled(signal: AbortSignal | undefined, what: string) {
+  if (signal?.aborted) throw fail("TIMEOUT", `${what} cancelled before it started: nothing was sent`);
+}
+
+/** Waits for a step before the send (the session's start, its discovery), or stops at once when cancelled: nothing was
+ * sent, and the step finishes on its own for the session's next call. */
+function beforeSend<T>(step: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
+  if (!signal) return step;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(fail("TIMEOUT", `${what} cancelled before it was sent: nothing was sent`));
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    step.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
 export type WriteResult =
   | { replayed: true; key: string; ref: string | null; at?: string }
   | { replayed: false; key: string; ref: string | null; raw: Record<string, any>; value: unknown; via: Via };
@@ -123,8 +160,10 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const early = replayOrRefuse(keyState(key, seen)); // no session for a key already sent or unresolved
   if (early) return early;
 
-  const session = await open(p.manifest);
-  requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
+  stopIfCancelled(req.signal, `Write ${key}`);
+  const session = await beforeSend(open(p.manifest), req.signal, `Write ${key}`);
+  requireConnected(await beforeSend(session.waitForServers([p.manifest.connectorName]), req.signal, `Write ${key}`), p.manifest);
+  stopIfCancelled(req.signal, `Write ${key}`); // still unclaimed: nothing to record
   // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
   let claim: ReturnType<typeof claimKey>;
   try {
@@ -146,7 +185,7 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const started = Date.now();
   let raw: Record<string, any>;
   try {
-    raw = await invoke(session, p, req.deadlineMs);
+    raw = await invoke(session, p, req.deadlineMs, req.signal);
   } catch (error) {
     const code = error instanceof PlugboardError ? error.code : "UPSTREAM_ERROR";
     if ((code === "TIMEOUT" || code === "UNREACHABLE") && !wasNotSent(error)) {

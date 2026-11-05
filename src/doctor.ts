@@ -5,7 +5,8 @@ import { unresolvedKeys } from "./audit";
 import { captureConnectorSchemas } from "./bridge/capture";
 import type { ConnectorServer } from "./bridge/client";
 import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveIndex, toolHash, type Manifest, type ManifestTool } from "./cache";
-import { BIN, prepare, profileName } from "./call";
+import { BIN, profileName } from "./call";
+import { prepare } from "./prepare";
 import { invoke } from "./core";
 import { authStatus, claudePath, claudeVersion, connectClaude, costGuard } from "./claude";
 import { DirectSession, resolveTransport } from "./direct";
@@ -115,7 +116,7 @@ export async function doctor(argv: string[]) {
    * through Claude Code (a warning), under direct they fail (blind). A read the proxy fails after the request
    * left fails calls under either: blind. */
   async function checkDirect(id: string, manifest: Manifest, tools: ManifestTool[]) {
-    const session = new DirectSession([manifest], async () => { throw new Error("not direct"); }, undefined, { fallback: false });
+    const session = new DirectSession([manifest], async () => { throw new Error("not direct"); }, undefined, { transport: "direct" });
     const notDirect = (why: string) => {
       if (!direct) return add(`direct:${id}`, "warn", `calls go through Claude Code: ${why}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
       blind.add(id); // the transport allows no fallback: its calls fail
