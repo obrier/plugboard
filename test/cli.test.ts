@@ -307,13 +307,15 @@ test("write handshake: --plan on the args file, then the write with that hash; a
   expect(calls()).toEqual([{ tool: "mcp__claude_ai_Slack__slack_send_message", args: { message: "approved text", channel_id: "D1" } }]);
 });
 
-test("a tool's own idempotency_key is filled from --write-key, in the plan hash and in the call", async () => {
+test("a tool's own idempotency_key is filled from --write-key in the call, outside the hash: the approval names the content", async () => {
   const note = ["slack", "create-note", "--text", "n"];
   const plan = JSON.parse((await run([...note, "--write-key", "out-7", "--plan", "--out", "json"])).stdout);
   expect(plan.payload).toEqual({ text: "n", idempotency_key: "out-7" });
-  expect(plan.hash).not.toBe(await planHash(note)); // the key is part of what was approved
+  expect(plan.hash).toBe(await planHash(note)); // planned without a key: the same approval
   expect((await run([...note, "--as", "executor", "--write", "--write-key", "out-7", "--expect-hash", plan.hash])).code).toBe(0);
   expect(calls()[0].args).toEqual({ text: "n", idempotency_key: "out-7" });
+  // An idempotency_key the caller writes is content: part of the hash.
+  expect(await planHash([...note, "--idempotency-key", "mine"])).not.toBe(plan.hash);
 });
 
 test("usage: counts only real tool calls, maps UUID-named connectors by tool name, then ranks and caps listings", async () => {

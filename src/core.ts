@@ -5,7 +5,7 @@ import { viaOf, type Via } from "./direct";
 import { appendAudit, claimKey, keyState, readAudit, type AuditEntry } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
-import { prepare, requireManifest, requireTool, type Prepared } from "./prepare";
+import { payloadHash, prepare, requireManifest, requireTool, type Prepared } from "./prepare";
 import { costGuard } from "./claude";
 import { asPlugboardError, classify as classifyError, fail, PlugboardError, wasNotSent, type Code } from "./errors";
 import { errorText, unwrap } from "./unwrap";
@@ -55,9 +55,15 @@ function mint(policy: Policy, req: CallRequest, key?: string): Prepared {
   // Plain JSON once, before transforms, validation and the hash: the wire is JSON, so what is checked and
   // approved is exactly what is sent (no toJSON, getter or Date can change between the two).
   const args = JSON.parse(JSON.stringify(req.args ?? {})) as Record<string, unknown>;
-  // A tool with its own idempotency_key gets the write key, so the service refuses a duplicate too; part of the hash.
-  if (key && "idempotency_key" in (tool.inputSchema.properties ?? {}) && args.idempotency_key === undefined) args.idempotency_key = key;
-  return prepare(policy, manifest, tool, args, classify(policy, manifest.id, tool) === "write");
+  // A tool with its own idempotency_key gets the write key, so the service refuses a duplicate too. The key is
+  // validated and sent, but stays out of the hash: the approval names the content, and the key is chosen at send
+  // time (write(plan, { key })). One the caller wrote in the args is content, and hashed.
+  const keyed = key !== undefined && "idempotency_key" in (tool.inputSchema.properties ?? {}) && args.idempotency_key === undefined;
+  if (keyed) args.idempotency_key = key;
+  const p = prepare(policy, manifest, tool, args, classify(policy, manifest.id, tool) === "write");
+  if (!keyed) return p;
+  const { idempotency_key: _, ...content } = p.args;
+  return { ...p, hash: payloadHash(manifest.id, tool.name, content, tool.sourceName) };
 }
 
 export type Plan = { connector: string; tool: string; class: string; destructive: boolean; profile: string; decision: string; hash: string; payload: Record<string, unknown> };
