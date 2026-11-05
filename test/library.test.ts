@@ -21,7 +21,7 @@ const ENV = {
 const saved: Record<string, string | undefined> = {};
 beforeAll(() => {
   for (const [k, v] of Object.entries(ENV)) { saved[k] = process.env[k]; process.env[k] = v; }
-  for (const k of ["CLAUDECODE", "PLUGBOARD_PROFILE", "PLUGBOARD_TRANSPORT", "PLUGBOARD_DIRECT"]) { saved[k] = process.env[k]; delete process.env[k]; }
+  for (const k of ["CLAUDECODE", "PLUGBOARD_PROFILE", "PLUGBOARD_TRANSPORT"]) { saved[k] = process.env[k]; delete process.env[k]; }
 });
 afterAll(() => {
   for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;

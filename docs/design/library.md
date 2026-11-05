@@ -111,7 +111,7 @@ transport = "auto"  # policy.toml: the CLI and the library
 
 - Also `PLUGBOARD_TRANSPORT` in the environment. Narrowest wins: call, instance, environment, policy.
 - The values are the words `via` reports.
-- `PLUGBOARD_DIRECT=0`, released in 0.1.3, is read as `claude-code` for one release, then dropped.
+- `PLUGBOARD_DIRECT=0`, released in 0.1.3, is read as `claude-code` for one release, then dropped: 0.3.0 no longer reads it.
 - `claude_path` and `PLUGBOARD_CLAUDE` keep their names: they say where Claude Code is, which `refresh`, `doctor` and the fallback still need.
 - `connect`, `Session`, `DirectSession` and `src/bridge/` are internal, not part of the public API.
 

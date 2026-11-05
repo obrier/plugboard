@@ -31,11 +31,10 @@ export type Transport = (typeof TRANSPORTS)[number];
 export type Via = Exclude<Transport, "auto">;
 
 /** The narrowest setting wins: the call's (or the instance's), PLUGBOARD_TRANSPORT, then the policy's `transport`.
- * PLUGBOARD_DIRECT=0 (0.1.3) still means claude-code. Auto stays on Claude Code with a custom CLAUDE_CONFIG_DIR, where
+ * Auto stays on Claude Code with a custom CLAUDE_CONFIG_DIR, where
  * Claude Code may keep its login under another name (unverified). */
 export function resolveTransport(policy: { transport?: Transport }, override?: Transport, env = process.env): Transport {
-  const fromEnv = env.PLUGBOARD_TRANSPORT || (env.PLUGBOARD_DIRECT === "0" ? "claude-code" : undefined);
-  const chosen = override ?? fromEnv ?? policy.transport ?? "auto";
+  const chosen = override ?? (env.PLUGBOARD_TRANSPORT || undefined) ?? policy.transport ?? "auto";
   if (!TRANSPORTS.includes(chosen as Transport))
     throw fail("VALIDATION_ERROR", `Unknown transport "${chosen}" (one of ${TRANSPORTS.join(", ")})`, ["Set it in policy.toml or PLUGBOARD_TRANSPORT"]);
   return chosen === "auto" && env.CLAUDE_CONFIG_DIR ? "claude-code" : chosen as Transport;

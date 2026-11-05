@@ -17,7 +17,6 @@
 | `PLUGBOARD_PROFILE` | The default profile |
 | `PLUGBOARD_TRANSPORT` | How calls reach their connectors, over `transport` in policy.toml (below) |
 | `PLUGBOARD_AXI` | `1` turns on the AXI output, which is already on inside Claude Code; `0` turns it off |
-| `PLUGBOARD_DIRECT` | `0`, from 0.1.3, still means `PLUGBOARD_TRANSPORT=claude-code` |
 
 The transports:
 - **`auto`** (the default) calls the connector proxy direct and falls back to Claude Code. When `CLAUDE_CONFIG_DIR` is set, it sends every call through Claude Code instead, as `claude-code` does.
