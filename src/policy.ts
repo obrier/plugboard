@@ -103,8 +103,8 @@ function transportOf(path: string, value: unknown): Transport | undefined {
   throw fail("VALIDATION_ERROR", `${path}: transport must be one of ${TRANSPORTS.join(", ")}`, [`Edit ${path}`]);
 }
 
-export function loadPolicy(): Policy {
-  const path = policyPath();
+/** The policy file at this path, or PLUGBOARD_POLICY's, or the default location; a missing file is the built-in default. */
+export function loadPolicy(path = policyPath()): Policy {
   const tPath = transformsPath();
   const transformsFile = existsSync(tPath) ? { text: readFileSync(tPath, "utf8"), path: tPath } : undefined;
   if (!existsSync(path)) return { ...parsePolicy("", path, transformsFile), source: null };

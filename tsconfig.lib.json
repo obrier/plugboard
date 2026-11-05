@@ -1,0 +1,6 @@
+{
+  // The library's types, bundled into dist/lib/index.d.ts by dts-bundle-generator (package.json's build:lib).
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "declaration": true, "emitDeclarationOnly": true },
+  "include": ["src/index.ts"]
+}
