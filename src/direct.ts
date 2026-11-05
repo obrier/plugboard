@@ -8,7 +8,7 @@ import { version } from "../package.json";
 import type { ClaudeConnectors, ConnectorServer, ControlRequest } from "./bridge/client";
 import type { Manifest } from "./cache";
 import { requireConnected } from "./connected";
-import { fail } from "./errors";
+import { fail, markNotSent } from "./errors";
 import { runtime } from "./runtime";
 
 /** The one host the direct path talks to: Anthropic's MCP proxy for claude.ai connectors. It serves connector
@@ -106,7 +106,8 @@ export class DirectSession {
           refused = error.message;
         }
       }
-      const client = await this.fallback(refused);
+      // This call hasn't been sent anywhere yet: a Claude Code that can't start says so.
+      const client = await this.fallback(refused).catch(error => { throw markNotSent(error); });
       // As without the direct path: a connector Claude Code doesn't list as connected is refused before the call.
       if (tool) requireConnected(this.discovered, tool.manifest);
       return client.request<T>(request, options);

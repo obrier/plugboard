@@ -7,7 +7,7 @@ import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
 import { prepare, requireManifest, requireTool, type Prepared } from "./call";
 import { costGuard } from "./claude";
-import { asAxiError, classify as classifyError, fail, type Code } from "./errors";
+import { asAxiError, classify as classifyError, fail, wasNotSent, type Code } from "./errors";
 import { errorText, unwrap } from "./output";
 import { classify, decide, profileFor, type Policy } from "./policy";
 
@@ -147,7 +147,7 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
     raw = await invoke(session, p, req.deadlineMs);
   } catch (error) {
     const code = error instanceof AxiError ? error.code : "UPSTREAM_ERROR";
-    if (code === "TIMEOUT" || code === "BRIDGE_BROKEN") {
+    if ((code === "TIMEOUT" || code === "BRIDGE_BROKEN") && !wasNotSent(error)) {
       appendAudit({ key, status: "unknown", code, ms: Date.now() - started });
       throw fail("WRITE_OUTCOME_UNKNOWN", `Write ${key} may or may not have happened: ${(error as Error).message}`, [
         `Check the destination by hand, then \`${BIN} audit resolve ${key} --sent|--not-sent\``,
