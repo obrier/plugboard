@@ -1,6 +1,6 @@
 {
   "name": "@obrier/plugboard",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "claude.ai connector tools from code and as shell commands, at zero model tokens",
   "type": "module",
   "license": "MIT",
