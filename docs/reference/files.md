@@ -20,7 +20,7 @@
 | `PLUGBOARD_DIRECT` | `0`, from 0.1.3, still means `PLUGBOARD_TRANSPORT=claude-code` |
 
 The transports:
-- **`auto`** (the default) calls the connector proxy direct and falls back to Claude Code.
+- **`auto`** (the default) calls the connector proxy direct and falls back to Claude Code. When `CLAUDE_CONFIG_DIR` is set, it sends every call through Claude Code instead, as `claude-code` does.
 - **`direct`** makes calls without ever starting Claude Code, and fails with exit 10 where `auto` would fall back. Only `refresh` starts it: run `plugboard refresh` once where it can. `doctor` then checks the cache and a direct read per connector instead of Claude Code.
 - **`claude-code`** sends every call through Claude Code.
 
@@ -30,7 +30,7 @@ How each one works is in [How it works](../concepts/how-it-works.md#direct-calls
 
 | Platform | Status |
 |---|---|
-| macOS (arm64, x64) | Supported; tested in CI |
+| macOS (arm64, x64) | Supported; tested in CI on arm64 |
 | Linux (x64, arm64) | Supported; tested in CI |
 | Windows through WSL2 | Supported; tested in CI on Ubuntu under WSL2. Install Plugboard **and Claude Code inside WSL**: a Windows Claude Code is a separate install with its own login, and Plugboard never uses it. Agents running on the Windows side can call it with `wsl plugboard …` |
 | Native Windows | Not yet |

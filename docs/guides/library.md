@@ -28,7 +28,7 @@ A write: plan it, have its hash approved, then send it once under a key.
 import { plan, write } from "@obrier/plugboard";
 
 const p = plan({ connector: "slack", tool: "send_message", args: { channel_id: "D1", message: "hi" }, profile: "executor" });
-const sent = await write(p, { key: "reply-42", profile: "executor" }); // { sent: true, key, ref, value } or { replayed: true, key, ref }
+const sent = await write(p, { key: "reply-42", profile: "executor" }); // { sent: true, key, ref, value, raw, via } or { replayed: true, key, ref, at? }
 ```
 
 A plan is plain JSON and can be saved, approved and sent later. `write()` plans its request again and sends it only if the hash still matches, under the profile the sender names (or the instance's), never the one written in the plan. The whole flow is in [Writes: plan, approve, send](writes.md).

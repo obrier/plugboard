@@ -31,6 +31,8 @@ A write needs four things:
 3. an idempotency key (`--write-key`);
 4. the payload hash that `--plan` printed for exactly that payload (`--expect-hash`).
 
+A tool its connector marks `destructiveHint` also needs `allow_destructive = true` in the profile.
+
 Another process can approve a payload by its hash, and Plugboard sends it only if the bytes still match. Writes are never retried. Each one is logged before and after the call, by hash, to `~/.local/state/plugboard/audit.jsonl`. A write that timed out blocks its key until you check the destination and run `plugboard audit resolve <key> --sent|--not-sent`.
 
 Plugboard refuses writes from inside a Claude Code session unless a profile opts in with `allow_in_agent = true`.

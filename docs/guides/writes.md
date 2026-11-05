@@ -8,7 +8,7 @@ Plugboard is read-only unless you set it up otherwise. A write, such as sending 
 
 ## 1. Allow the write in a profile
 
-Writes need a profile with `mode = "write"` that names the tool exactly. Wildcards only ever match read tools.
+Writes need a profile with `mode = "write"` that names the tool exactly. Wildcards only ever match read tools, and a tool its connector marks destructive also needs `allow_destructive = true`.
 
 ```toml
 # ~/.config/plugboard/policy.toml
@@ -20,7 +20,7 @@ allow = ["slack:slack_send_message"]
 ## 2. Plan it
 
 ```console
-$ plugboard slack send-message --arg-file reply.json --as executor --plan --out json
+$ plugboard slack send-message --arg-file reply.json --as executor --plan --out json | jq
 {
   "connector": "slack",
   "tool": "slack_send_message",
@@ -42,7 +42,7 @@ plugboard slack send-message --arg-file reply.json --as executor \
   --write --write-key reply-42 --expect-hash sha256:9f2c…
 ```
 
-- **The key** (`--write-key`) names this send. Run the same command again and Plugboard replays the first result instead of sending a second message.
+- **The key** (`--write-key`) names this send. Run the same command again and nothing is sent: Plugboard answers that the key was already sent, with the first send's reference.
 - **The hash** (`--expect-hash`) must match the payload as planned again now. A file edited since the plan is refused.
 
 > [!WARNING]

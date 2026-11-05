@@ -18,10 +18,11 @@ Each output line is `{"id","ok":true,"ms","result"}` or `{"id","ok":false,"error
 ## How it runs
 
 - **Streaming:** lines are read as they arrive and each result is printed when it's done (in input order with `--ordered`), so a producer can feed it while results come back.
-- **Failures stay local:** a bad line fails on its own, without stopping the batch. Only a broken session (`UNREACHABLE`) or a model reached (`COST_GUARD`) stops it: the lines running and those already read fail with it, and it reads no more.
+- **Failures stay local:** a bad line fails on its own, without stopping the batch. Only a broken session (`UNREACHABLE`) or a model reached (`COST_GUARD`) stops it early: the lines running and those already read fail with it, and it reads no more.
 - **Rate limits:** a 429 backs off and drops that connector to one call at a time.
 - **Auth failures:** one auth failure fails the rest of that connector's lines at once.
 - **Reads only:** batch never runs write tools.
+- **A time budget:** `--budget` (5 minutes by default, as `30s`, `500ms` or `2m`) bounds the whole batch; lines not started by then fail with `TIMEOUT`.
 
 A batch where some lines failed exits 7.
 

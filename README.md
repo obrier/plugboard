@@ -2,7 +2,7 @@
 
 **Auth once. Plug into any agent.**
 
-[![CI](https://img.shields.io/github/actions/workflow/status/obrier/plugboard/ci.yml?branch=main&label=ci)](https://github.com/obrier/plugboard/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/obrier/plugboard?sort=semver)](https://github.com/obrier/plugboard/releases) [![Homebrew](https://img.shields.io/badge/brew-obrier%2Ftap%2Fplugboard-orange)](https://github.com/obrier/homebrew-tap) [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey)](#platforms) [![License: MIT](https://img.shields.io/github/license/obrier/plugboard)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/obrier/plugboard/ci.yml?branch=main&label=ci)](https://github.com/obrier/plugboard/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/obrier/plugboard?sort=semver)](https://github.com/obrier/plugboard/releases) [![Homebrew](https://img.shields.io/badge/brew-obrier%2Ftap%2Fplugboard-orange)](https://github.com/obrier/homebrew-tap) [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey)](docs/reference/files.md#platforms) [![License: MIT](https://img.shields.io/github/license/obrier/plugboard)](LICENSE)
 
 Your claude.ai connectors (Slack, Gmail, Calendar, Drive, Datadog, Sentry, Figma, your org's custom ones) as shell commands. Any agent that can run a shell gets them: Codex, Gemini CLI, pi, Hermes, OpenCode, or a cron job. It reuses the Claude Code login you already have. No new OAuth, no API keys, no tokens held by a third party, and zero model tokens per call. Read-only by default; writes need a plan, a hash and a human.
 
