@@ -1,9 +1,8 @@
 # Push a vX.Y.Z tag (npm version patch && git push --follow-tags) to release:
-# test → build the four binaries and the library → npm → GitHub release → formula pushed to obrier/homebrew-tap.
+# test → build the four binaries and the library → GitHub release → formula pushed to obrier/homebrew-tap → npm.
 # Run it by hand (workflow_dispatch) for a dry run: it builds and uploads the archives as a
-# workflow artifact, packs the library with npm publish --dry-run, and publishes nothing.
-# npm trusts this workflow (trusted publishing, set on the package's settings page on npmjs.com):
-# no token is stored, and npm adds provenance itself.
+# workflow artifact, packs the library with npm pack --dry-run, and publishes nothing.
+# Every publishing step skips what is already done, so re-running a release that failed part-way finishes it.
 name: release
 on:
   push:
@@ -11,23 +10,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # create the GitHub release
-  id-token: write # npm's trusted publishing: the workflow proves who it is with an OIDC token
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest # bun cross-compiles the macOS binaries too
+    permissions:
+      contents: write # create the GitHub release
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@11.19.0 # trusted publishing needs npm 11.5.1 or later
 
       - name: Tag must match package.json
         if: github.ref_type == 'tag'
@@ -38,16 +33,14 @@ jobs:
       - name: Test, build archives, render formula
         run: scripts/release.sh
 
-      - name: Build the library
-        run: bun run build:lib
+      - name: Build the library and list what npm would ship
+        run: bun run build:lib && npm pack --dry-run # never asks the registry, unlike npm publish --dry-run
 
-      - name: "Dry run: pack the library as npm would publish it"
-        if: github.ref_type != 'tag'
-        run: npm publish --dry-run --access public
-
-      - name: Publish the library to npm, with provenance
-        if: github.ref_type == 'tag'
-        run: npm publish --access public
+      - name: Keep the library for the npm job
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-library
+          path: dist/lib/
 
       - name: "Dry run: keep the archives as a workflow artifact"
         if: github.ref_type != 'tag'
@@ -60,7 +53,9 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/*/*.tar.gz --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then echo "$GITHUB_REF_NAME is already released"; exit 0; fi
+          gh release create "$GITHUB_REF_NAME" release/*/*.tar.gz --title "$GITHUB_REF_NAME" --generate-notes
 
       - name: Push the formula to obrier/homebrew-tap
         if: github.ref_type == 'tag'
@@ -74,4 +69,37 @@ jobs:
           cd tap
           git config user.name "plugboard release" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Formula/plugboard.rb
+          if git diff --cached --quiet; then echo "the tap already has this formula"; exit 0; fi
           git commit -m "plugboard ${GITHUB_REF_NAME#v}" && git push
+
+  # npm trusts this job (trusted publishing, set on the package's settings page on npmjs.com, environment "npm"):
+  # no token is stored, and npm adds provenance itself. It alone may ask for an OIDC token, and it installs and
+  # runs no dependency: it publishes the library the release job built.
+  npm:
+    needs: release
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Trusted publishing needs npm 11.5.1 or later
+        run: node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error(`npm ${process.argv[1]} is older than 11.5.1`); process.exit(1); }' "$(npm --version)"
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-library
+          path: dist/lib/
+      - name: Publish the library to npm, with provenance
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          # Asked without credentials: setup-node's .npmrc holds a placeholder token until npm exchanges the OIDC one.
+          if curl -fsS -o /dev/null "https://registry.npmjs.org/@obrier%2fplugboard/$version"; then echo "@obrier/plugboard@$version is already on npm"; exit 0; fi
+          npm publish --access public
