@@ -114,3 +114,22 @@ transport = "auto"  # policy.toml: the CLI and the library
 - `PLUGBOARD_DIRECT=0`, released in 0.1.3, is read as `claude-code` for one release, then dropped.
 - `claude_path` and `PLUGBOARD_CLAUDE` keep their names: they say where Claude Code is, which `refresh`, `doctor` and the fallback still need.
 - `connect`, `Session`, `DirectSession` and `src/bridge/` are internal, not part of the public API.
+
+## 6. Batch: async iterables in and out
+
+Chosen 2026-11-05, over a promise of an array or a callback per result.
+
+```ts
+for await (const r of batch(requests, { concurrency: 4 })) {
+  if (r.ok) save(r.id, r.value);
+  else console.warn(r.id, r.error.code, r.error.hints);
+}
+const all = await Array.fromAsync(batch(requests, { ordered: true }));
+```
+
+- Input: any iterable or async iterable of the `call()` object, with an optional `id`, so a producer can feed it while results come back. The CLI's `batch` reads stdin the same way, line by line, instead of all at once.
+- Output: completion order by default, input order with `ordered: true`. `{ id, ok: true, value, raw, via }` or `{ id, ok: false, error }`; a line's failure is a result, not an exception.
+- `UNREACHABLE` or `COST_GUARD` fails the remaining lines and ends the batch. Breaking out of the loop cancels the lines still running.
+- Reads only: a write tool is refused for its line. A write is one approved plan, sent with `write()`.
+- The options are today's: `concurrency`, a per-connector limit, `ordered`, a time budget; rate limits and read timeouts are retried as today.
+- One batch in the core: the CLI adds only reading stdin and printing JSON lines.
