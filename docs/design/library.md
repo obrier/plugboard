@@ -46,3 +46,17 @@ await call({ connector: "gcal", tool: "list-events", args: { calendarId: "primar
 - The same object as a batch line, `{ connector, tool, args }`, with the call's options beside it: a line can be passed to `call()` as it is, and new fields don't change any order.
 - `connector` takes an ID or a policy alias; `tool` takes the tool's name, the CLI's short name or its kebab form, as the core resolves them today.
 - `timeoutMs` is the CLI's `--deadline`. `signal` is the usual `AbortSignal`: a read cancelled is dropped; a write cancelled after it was sent is recorded as an unknown outcome, like a timeout.
+
+## 3. Writes: `write(plan, { key })`
+
+Chosen 2026-11-05, over `write({ ...request, key, expectHash })`.
+
+```ts
+const p = plan({ connector: "slack", tool: "send_message", args: { channel_id: "D1", message: "hi" }, profile: "executor" });
+const sent = await write(p, { key: "reply-42" });  // { sent: true, key, ref, value }, or { replayed: true, key, ref }
+```
+
+- `call()` only reads. A write tool passed to `call()` is refused (POLICY_DENIED) with a pointer to `write()`.
+- A plan is plain JSON and can travel: an agent plans and saves it, a person approves it, a script runs `write(JSON.parse(saved), { key })`. `write` trusts nothing in the object: it plans the plan's request again and sends only if the hash still matches the plan's, so a plan edited in transit is refused.
+- So a plan carries the request it was made from (`request: { connector, tool, args, profile }`), not only the payload after transforms; planning the payload again would apply a transform such as `"-1d"` twice. A relative time in a write's args resolves to a new instant when it is planned again, changing the hash: such a write is refused, as `--write --expect-hash` refuses it in the CLI today.
+- Every check stays in the core: the write profile, the key, the hash, the claim in the audit log, replaying a key already sent, and refusing writes inside a Claude Code session unless the profile allows it.
