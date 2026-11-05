@@ -37,6 +37,10 @@ Step 5 authenticates with the `TAP_DEPLOY_KEY` secret: a deploy key with write a
 
 Step 6 stores no token. npm trusts the job through [trusted publishing](https://docs.npmjs.com/trusted-publishers): the package's settings on npmjs.com name `obrier/plugboard`, the workflow `release.yml` and the environment `npm`, and the job proves it is that workflow with a GitHub OIDC token. npm adds provenance itself. Only the `npm` job may ask for that token, and it installs and runs no dependency. npm only takes a trusted publisher for a package that exists, so a placeholder `0.0.0` was published by hand first, then deprecated.
 
+Two repository settings guard it:
+- **The ruleset "Release tags":** only admins can create, move or delete `v*` tags.
+- **The environment `npm`:** it runs only for `v*` tags and waits for a maintainer's approval. Approve it under the run's **Review deployments**, or with `gh run view <id>`.
+
 Then check it:
 
 ```bash
