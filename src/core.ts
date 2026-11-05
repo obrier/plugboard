@@ -88,6 +88,15 @@ export function planCall(policy: Policy, profile: string, req: CallRequest, key?
   return { connector: p.manifest.id, tool: p.tool.name, class: p.cls, destructive: p.tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload, ...(fills ? { keyFills: fills } : {}) };
 }
 
+/** A call that failed may still have reached a model: its cost is checked as after a success. A session that isn't
+ * zero-cost is COST_GUARD, naming the call's own failure; otherwise the call's error stands. */
+async function failedCall(session: Session, error: unknown): Promise<never> {
+  let guard: PlugboardError | undefined;
+  try { await costGuard(session); } catch (e) { if (e instanceof PlugboardError && e.code === "COST_GUARD") guard = e; }
+  if (guard) throw fail("COST_GUARD", `${guard.message} (the call itself failed: ${(error as Error).message})`, guard.hints);
+  throw error;
+}
+
 /** `via`: the path that served the call, the connector proxy direct or Claude Code. */
 export type ReadResult = { raw: Record<string, any>; value: unknown; via: Via };
 
@@ -98,7 +107,7 @@ export async function callRead(open: OpenSession, policy: Policy, profile: strin
   stopIfCancelled(signal, "Read");
   const session = await beforeSend(open(p.manifest), signal, "Read");
   requireConnected(await beforeSend(session.waitForServers([p.manifest.connectorName]), signal, "Read"), p.manifest);
-  const raw = await invoke(session, p, deadlineMs, signal);
+  const raw = await invoke(session, p, deadlineMs, signal).catch(error => failedCall(session, error));
   await costGuard(session);
   return { raw, value: unwrap(raw), via: viaOf(raw) };
 }
@@ -195,7 +204,10 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
       ]);
     }
     appendAudit({ key, status: "error", code, message: (error as Error).message.slice(0, 300), ms: Date.now() - started });
-    throw error;
+    return await failedCall(session, error).catch(e => {
+      if (e instanceof PlugboardError && e.code === "COST_GUARD") appendAudit({ key, status: "cost-guard", message: e.message });
+      throw e;
+    });
   }
   const value = unwrap(raw);
   const ref = refOf(value) ?? null;
@@ -223,8 +235,10 @@ export type BatchResult<L extends BatchLine = BatchLine> = Attempts & (
   | { ok: true; line: L; value: unknown; raw: Record<string, any>; via: Via }
   | { ok: false; error: PlugboardError; retryable: boolean });
 
-/** Reads in, results out, as both arrive: a line's failure is its result. UNREACHABLE or COST_GUARD fails the lines
- * still to come, unsent, and ends the batch once its input does; leaving the loop cancels the lines still running.
+/** Reads in, results out, as both arrive: a line's failure is its result. UNREACHABLE or COST_GUARD (or the budget)
+ * fails the lines already taken in, unsent, and ends the batch without reading on; UNREACHABLE and COST_GUARD also
+ * cancel the lines still running, which fail with it. Leaving the loop cancels them too. An input that throws: the
+ * lines it gave finish and are delivered, then its error is thrown.
  * Reads only. It reads ahead at most `concurrency` lines it can't start yet. An item that is already an error (a
  * line its producer couldn't parse) is that line's failure; `toLine` turns a producer's own form into a line, its
  * failure that line's too, under the item's id. `open` gives the session for a line. */
@@ -233,7 +247,8 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
   toLine: (item: I) => L = item => item as unknown as L): AsyncGenerator<BatchResult<L>> {
   type Task = { line: L; id: unknown; index: number; name: string; attempts: number };
   const source = (async function* () { yield* items; })();
-  const cancel = new AbortController();
+  const cancel = new AbortController(); // the loop was left
+  const stopRunning = new AbortController(); // UNREACHABLE or COST_GUARD: the lines still running are cancelled
   const budgetEnd = o.budgetMs === undefined ? Infinity : Date.now() + o.budgetMs;
   const backoff = o.backoffMs ?? [1000, 4000];
   const queue: Task[] = [];
@@ -243,7 +258,8 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
   const running = new Set<Promise<void>>();
   const out: BatchResult<L>[] = [];
   const held = new Map<number, BatchResult<L>>(); // ordered: results waiting for an earlier line's
-  let next = 0, read = 0, pulling = false, ended = false, stop: PlugboardError | undefined, producerError: unknown;
+  let next = 0, read = 0, pulling = false, ended = false, stop: PlugboardError | undefined;
+  let producer: { error: unknown } | undefined; // the input threw: what it gave finishes first
   let wake: (() => void) | undefined;
   const signal = () => { const w = wake; wake = undefined; w?.(); };
 
@@ -290,16 +306,19 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
     t.attempts++;
     try {
       const { line } = t;
-      const lineSignal = line.signal ? AbortSignal.any([cancel.signal, line.signal]) : cancel.signal;
+      const lineSignal = AbortSignal.any([cancel.signal, stopRunning.signal, ...(line.signal ? [line.signal] : [])]);
       const read = await callRead(open(line), policy, line.profile ?? o.profile, { connector: line.connector, tool: line.tool, args: line.args },
         line.timeoutMs ?? 30_000, lineSignal);
       emit({ id: t.id, index: t.index, attempts: t.attempts, ms: Date.now() - started, ok: true, line, ...read });
     } catch (error) {
       if (cancel.signal.aborted) return; // left the loop: no one reads it
-      const e = asPlugboardError(error, "UPSTREAM_ERROR");
-      if (e.code === "UNREACHABLE" || e.code === "COST_GUARD") stop ??= fail(e.code, `Stopped: ${e.message}`, e.hints);
+      let e = asPlugboardError(error, "UPSTREAM_ERROR");
+      if (e.code === "UNREACHABLE" || e.code === "COST_GUARD") {
+        if (!stop) { stop = fail(e.code, `Stopped: ${e.message}`, e.hints); stopRunning.abort(); }
+      } else if (stopRunning.signal.aborted && e.code === "TIMEOUT") e = stop!; // cancelled by the stop: it fails with it
       if (e.code === "AUTH_REQUIRED") blind.set(t.name, e);
-      const again = (e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2);
+      const cancelled = t.line.signal?.aborted === true; // its caller's cancel: not retried
+      const again = !cancelled && ((e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2));
       if (again && !stopped()) {
         if (e.code === "RATE_LIMITED") {
           caps.set(t.name, 1);
@@ -308,7 +327,7 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
         queue.push(t);
         return;
       }
-      failLine(t, e, { retryable: e.code === "RATE_LIMITED" || e.code === "TIMEOUT", ms: Date.now() - started });
+      failLine(t, e, { retryable: !cancelled && !stop && (e.code === "RATE_LIMITED" || e.code === "TIMEOUT"), ms: Date.now() - started });
     }
   };
 
@@ -325,23 +344,26 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
       const task: Promise<void> = run(t).finally(() => { running.delete(task); active.set(t.name, active.get(t.name)! - 1); signal(); });
       running.add(task);
     }
-    // Read on while there is room: a stopped batch reads its input to the end, failing each line unsent.
-    if (!pulling && !ended && (halt || queue.length < o.concurrency)) {
+    // Read on while fewer than `concurrency` lines wait, to start or to be read (a result held for an earlier
+    // line's, or not yet taken): a stopped batch reads no more.
+    if (!pulling && !ended && !halt && queue.length + held.size + out.length < o.concurrency) {
       pulling = true;
       source.next().then(r => {
         pulling = false;
         if (r.done) ended = true; else intake(r.value, read++);
         signal();
-      }, error => { pulling = false; ended = true; producerError = error; signal(); });
+      }, error => { pulling = false; ended = true; producer = { error }; signal(); });
     }
   };
 
   try {
     for (;;) {
       pump();
-      if (producerError !== undefined) throw producerError;
       if (out.length) { yield out.shift()!; continue; }
-      if (ended && !pulling && !queue.length && !running.size) return;
+      if ((ended || stop) && !pulling && !queue.length && !running.size) {
+        if (producer) throw producer.error;
+        return;
+      }
       await new Promise<void>(resolve => (wake = resolve));
     }
   } finally {

@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { createInterface } from "node:readline";
 import { encode } from "@toon-format/toon";
 import { connectClaude } from "./claude";
-import { EXIT, fail, type Code, type PlugboardError } from "./errors";
+import { asPlugboardError, EXIT, fail, type Code, type PlugboardError } from "./errors";
 import { parseDeadline, profileName } from "./call";
 import { callBatch, type BatchLine, type OpenSession } from "./core";
 import { DirectSession, resolveTransport } from "./direct";
@@ -39,7 +39,17 @@ export async function runBatch(texts: AsyncIterable<string> | Iterable<string>, 
   let failed = false;
   let stop: Code | undefined; // the session broke, or a model was reached: the batch's exit code
   for await (const r of callBatch(() => open, loadPolicy(), jsonLines(texts), o, toLine)) {
-    if (r.ok) { emit({ id: r.id, ok: true, ms: r.ms, result: shape(r.value, r.line.shape) }); continue; }
+    let result: unknown;
+    if (r.ok) {
+      try { result = shape(r.value, r.line.shape); } catch (error) { // its where or select: that line's failure only
+        const e = asPlugboardError(error, "VALIDATION_ERROR");
+        failed = true;
+        emit({ id: r.id, ok: false, ms: r.ms, error: { code: e.code as Code, message: e.message, ...(e.hints.length ? { help: e.hints } : {}), retryable: false } });
+        continue;
+      }
+      emit({ id: r.id, ok: true, ms: r.ms, result });
+      continue;
+    }
     failed = true;
     const code = r.error.code as Code;
     if (code === "UNREACHABLE" || code === "COST_GUARD") stop ??= code;

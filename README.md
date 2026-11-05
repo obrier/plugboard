@@ -132,7 +132,7 @@ plugboard batch --as reader --concurrency 4 < calls.jsonl > results.jsonl
 
 Each output line is `{"id","ok":true,"ms","result"}` or `{"id","ok":false,"error":{"code","message","retryable","help"?}}`, `help` holding the failure's hints when it has any.
 - **Streaming:** lines are read as they arrive and each result is printed when it's done (in input order with `--ordered`), so a producer can feed it while results come back.
-- **Failures stay local:** a bad line fails on its own, without stopping the batch. Only a broken session (`UNREACHABLE`) or a model reached (`COST_GUARD`) stops it: the lines still to come fail unsent.
+- **Failures stay local:** a bad line fails on its own, without stopping the batch. Only a broken session (`UNREACHABLE`) or a model reached (`COST_GUARD`) stops it: the lines running and those already read fail with it, and it reads no more.
 - **Rate limits:** a 429 backs off and drops that connector to one call at a time.
 - **Auth failures:** one auth failure fails the rest of that connector's lines at once.
 - **Reads only:** batch never runs write tools.

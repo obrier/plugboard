@@ -55,6 +55,11 @@ afterEach(() => {
 const codeOf = async (promise: Promise<unknown>) => promise.then(() => "OK", (e: { code?: string }) => e.code);
 
 describe("callRead", () => {
+  test("a read that fails still has its cost checked: a model reached is COST_GUARD, not the read's own error", async () => {
+    const s = fakeSession({ fail: new Error("upstream exploded"), cost: "Total cost: $0.0300\nUsage: 10 input, 5 output, 0 cache read, 0 cache write" });
+    expect(await codeOf(callRead(s.open, policy, "default", search, 1_000))).toBe("COST_GUARD");
+  });
+
   test("sends exactly the cached tool, with the args it validated; then the cost guard", async () => {
     const s = fakeSession();
     const out = await callRead(s.open, policy, "default", search, 1_000);
@@ -122,6 +127,13 @@ describe("callWrite", () => {
     expect(await codeOf(callWrite(fakeSession().open, policy, send, req({ key: "k2" })))).toBe("WRITE_OUTCOME_UNKNOWN");
     expect(readAudit().map(e => e.status)).toEqual(["attempt", "unknown"]);
   });
+  test("a write that fails still has its cost checked, and the cost guard is audited", async () => {
+    const s = fakeSession({ fail: new Error("upstream exploded"), cost: "Total cost: $0.0100" });
+    const error = await callWrite(s.open, policy, send, req({ key: "k4" })).catch(e => e);
+    expect(error.code).toBe("COST_GUARD");
+    expect(error.message).toContain("upstream exploded");
+    expect(readAudit().map(e => e.status)).toEqual(["attempt", "error", "cost-guard"]);
+  });
   test("a cost guard that fails after the send is audited", async () => {
     expect(await codeOf(callWrite(fakeSession({ cost: "Total cost: $0.0100" }).open, policy, send, req({ key: "k3" })))).toBe("COST_GUARD");
     expect(readAudit().map(e => e.status)).toEqual(["attempt", "ok", "cost-guard"]);
@@ -180,12 +192,46 @@ describe("callBatch: async iterables in and out", () => {
     expect(closed).toBe(true);
   });
 
-  test("UNREACHABLE fails the remaining lines, sent to no one, and ends the batch; hints kept", async () => {
+  test("UNREACHABLE fails the lines already taken, sent to no one, and ends the batch, even with an endless producer; hints kept", async () => {
     const s = scripted();
-    const out = await all(callBatch(s.open, policy, [line("down"), line("b"), line("c")], { ...settings, concurrency: 1, ordered: true }));
-    expect(out.map(r => !r.ok && r.error.code)).toEqual(["UNREACHABLE", "UNREACHABLE", "UNREACHABLE"]);
-    expect(out.every(r => !r.ok && r.error.hints.includes("Run `plugboard doctor` for details"))).toBe(true);
+    let pulled = 0;
+    function* endless() { yield line("down"); for (;;) { pulled++; yield line("more"); } }
+    const out = await all(callBatch(s.open, policy, endless(), { ...settings, concurrency: 1, ordered: true }));
+    expect(out[0]).toMatchObject({ ok: false, error: { code: "UNREACHABLE" } });
+    expect(out.every(r => !r.ok && r.error.code === "UNREACHABLE" && r.error.hints.includes("Run `plugboard doctor` for details"))).toBe(true);
+    expect(pulled).toBeLessThan(5);
     expect(s.sent).toEqual(["down"]);
+  });
+
+  test("a stop cancels the lines still running: they fail with it", async () => {
+    const s = scripted();
+    const out = await all(callBatch(s.open, policy, [line("hang", "h"), line("down", "d")], { ...settings, concurrency: 2, ordered: true }));
+    expect(out.map(r => [r.id, !r.ok && r.error.code])).toEqual([["h", "UNREACHABLE"], ["d", "UNREACHABLE"]]);
+    expect(s.cancelled).toEqual(["hang"]);
+  });
+
+  test("a producer that throws: the lines it gave finish and are delivered, then its error", async () => {
+    const s = scripted();
+    async function* broken() { yield line("slow", "a"); yield line("fast", "b"); throw new Error("producer broke"); }
+    const seen: unknown[] = [];
+    const error = await (async () => { for await (const r of callBatch(s.open, policy, broken(), settings)) { seen.push(r.id); await new Promise(r => setTimeout(r, 30)); } })().catch(e => e);
+    expect((error as Error).message).toBe("producer broke");
+    expect(seen.sort()).toEqual(["a", "b"]);
+  });
+
+  test("ordered: results held for an earlier line count against the read-ahead", async () => {
+    const s = scripted();
+    let pulled = 0;
+    function* endless() { yield line("slow"); for (;;) { pulled++; yield line("fast"); } }
+    for await (const _ of callBatch(s.open, policy, endless(), { ...settings, concurrency: 2, perConnector: 2, ordered: true })) break;
+    expect(pulled).toBeLessThan(10);
+  });
+
+  test("a line cancelled by its own signal is not retried", async () => {
+    const s = scripted();
+    const out = await all(callBatch(s.open, policy, [{ ...line("hang"), signal: AbortSignal.timeout(20) }], settings));
+    expect(out[0]).toMatchObject({ ok: false, attempts: 1, retryable: false, error: { code: "TIMEOUT" } });
+    expect(s.sent).toEqual(["hang"]);
   });
 
   test("a write tool, a bad line, a producer's own error and a profile that refuses are each one line's failure", async () => {

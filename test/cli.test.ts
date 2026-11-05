@@ -221,6 +221,19 @@ test("batch reads stdin line by line: a line's result is out before the next lin
   expect(await proc.exited).toBe(0);
 }, 20_000);
 
+test("batch: a line whose where or select can't be applied fails on its own", async () => {
+  const lines = [
+    { id: "a", connector: "slack", tool: "search-public", args: { query: "one" } },
+    { id: "bad", connector: "slack", tool: "search-public", args: { query: "two" }, items: "matches", where: "n >>> (((" },
+    { id: "c", connector: "slack", tool: "search-public", args: { query: "three" } },
+  ].map(l => JSON.stringify(l)).join("\n");
+  const r = await run(["batch", "--as", "gather", "--ordered"], { stdin: lines });
+  const out = r.stdout.trim().split("\n").map(l => JSON.parse(l));
+  expect(out.map(o => [o.id, o.ok])).toEqual([["a", true], ["bad", false], ["c", true]]);
+  expect(out[1].error.code).toBe("VALIDATION_ERROR");
+  expect(r.code).toBe(7);
+});
+
 test("batch: an auth failure fails the rest of that connector fast", async () => {
   const lines = ["auth", "two", "three"].map(q => JSON.stringify({ id: q, connector: "slack", tool: "search-public", args: { query: q } })).join("\n");
   const r = await run(["batch", "--as", "gather", "--ordered", "--concurrency", "1"], { stdin: lines });
@@ -484,7 +497,8 @@ test("batch: a session that stops being zero-cost stops the batch at that line, 
   const r = await run(["batch", "--as", "gather", "--ordered", "--concurrency", "1"], { stdin: lines });
   const out = r.stdout.trim().split("\n").map(l => JSON.parse(l));
   expect(r.code).toBe(10);
-  expect(out.map(o => o.error?.code)).toEqual(["COST_GUARD", "COST_GUARD", "COST_GUARD"]);
+  expect(out[0].error?.code).toBe("COST_GUARD");
+  expect(out.every(o => o.error?.code === "COST_GUARD")).toBe(true); // the lines already read fail with it; the batch ends
   expect(calls()).toHaveLength(1); // a model was reached: no further call is made
 });
 
