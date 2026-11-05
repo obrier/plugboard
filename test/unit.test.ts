@@ -1,13 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { keyState } from "../src/audit";
 import { mergeCapture, shortName, findTool, type Manifest } from "../src/cache";
-import { applyTransforms, canonical, payloadHash, timeParams } from "../src/call";
+import { applyTransforms, canonical, payloadHash, timeParams } from "../src/prepare";
 import { refOf } from "../src/core";
 import { asPlugboardError, classify as classifyError, PlugboardError } from "../src/errors";
 import { cacheDir, collapseHome } from "../src/platform";
 import { DiscoveryTimeoutError } from "../src/bridge/client";
 import { mergeArgs, parseFlags, toolHelp } from "../src/flags";
-import { fileOf, markdownOf, render, shape, unwrap } from "../src/output";
+import { fileOf, markdownOf, render, shape } from "../src/output";
+import { unwrap } from "../src/unwrap";
 import { axiSummary } from "../src/batch";
 import { encode } from "@toon-format/toon";
 import { classify, decide, parsePolicy } from "../src/policy";

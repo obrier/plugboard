@@ -5,10 +5,10 @@ import { viaOf, type Via } from "./direct";
 import { appendAudit, claimKey, keyState, readAudit, type AuditEntry } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
-import { prepare, requireManifest, requireTool, type Prepared } from "./call";
+import { prepare, requireManifest, requireTool, type Prepared } from "./prepare";
 import { costGuard } from "./claude";
 import { asPlugboardError, classify as classifyError, fail, PlugboardError, wasNotSent, type Code } from "./errors";
-import { errorText, unwrap } from "./output";
+import { errorText, unwrap } from "./unwrap";
 import { classify, decide, profileFor, type Policy } from "./policy";
 
 import { BIN, requireConnected } from "./connected";
