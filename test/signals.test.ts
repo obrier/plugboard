@@ -37,6 +37,15 @@ describe("linkSignals", () => {
     expect((link.signal.reason as DOMException).name).toBe("TimeoutError");
   });
 
+  test("a timeout longer than a timer can hold (about 24.8 days) waits, never fires at once", async () => {
+    for (const ms of [2 ** 31, 3e9, Infinity]) {
+      const link = linkSignals([], ms);
+      await new Promise(r => setTimeout(r, 20));
+      expect(link.signal.aborted).toBe(false);
+      link.dispose();
+    }
+  });
+
   test("dispose lets go of every source and the timer: nothing aborts it afterwards", async () => {
     const a = source(), b = source();
     const link = linkSignals([a.signal, b.signal], 5);

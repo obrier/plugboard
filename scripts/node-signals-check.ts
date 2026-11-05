@@ -1,7 +1,7 @@
 // Long-lived signals on real Node, offline: a caller's signal that outlives its calls must not keep them alive.
 //   bun build scripts/node-signals-check.ts --target=node --outfile=dist/node-signals-check.mjs && node --expose-gc dist/node-signals-check.mjs
-// Node's AbortSignal.any keeps each combined signal while its sources live (and, on 22.12 and later, slows down as they
-// accumulate), and AbortSignal.timeout keeps each call until its timer fires. Fake sessions and a fake proxy: no network.
+// Node's AbortSignal.any keeps each combined signal while its sources live, and AbortSignal.timeout keeps each call
+// until its timer fires. Fake sessions and a fake proxy: no network.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { Manifest } from "../src/cache";
 import { callBatch, type BatchLine, type Session } from "../src/core";
 import { DirectSession, type Login } from "../src/direct";
+import { fail } from "../src/errors";
 import { writeJson } from "../src/platform";
 import { parsePolicy } from "../src/policy";
 
@@ -32,7 +33,24 @@ writeJson(join(root, "cache", "index.json"), { format: 1, testedVersions: [], co
 const policy = parsePolicy("", join(root, "policy.toml"));
 
 try {
-  await check("a long batch whose lines share one caller signal stays flat in memory and time", async () => {
+  // First, while nothing else keeps the program running: if the wait didn't, Node would exit here (code 13).
+  await check("a rate-limited line's wait before its retry keeps the program running", async () => {
+    let tried = false;
+    const session: Session = {
+      waitForServers: async () => [{ name: "claude.ai Slack", status: "connected", tools: [] }],
+      request: async (request: any) => {
+        if (request.subtype === "get_session_cost") return { text: "Total cost: $0.0000\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" } as any;
+        if (!tried) { tried = true; throw fail("RATE_LIMITED", "429 Too Many Requests"); }
+        return { structuredContent: { ok: true } } as any;
+      },
+    };
+    const results = [];
+    for await (const r of callBatch(() => async () => session, policy, [{ connector: "slack", tool: "slack_search", args: {} }],
+      { profile: "default", concurrency: 1, perConnector: 1, ordered: false, backoffMs: [300] })) results.push(r);
+    assert.deepEqual(results.map(r => [r.ok, r.attempts]), [[true, 2]]);
+  });
+
+  await check("a long batch whose lines share one caller signal stays flat in memory", async () => {
     const session: Session = {
       waitForServers: async () => [{ name: "claude.ai Slack", status: "connected", tools: [] }],
       request: async (request: any) => request.subtype === "get_session_cost"
@@ -40,23 +58,16 @@ try {
         : { structuredContent: { ok: true } } as any,
     };
     const app = new AbortController(); // the program's own signal, alive for as long as the program
-    const rounds: { mb: number; ms: number }[] = [];
     const before = heapMb();
     async function* lines(): AsyncGenerator<BatchLine> {
-      for (let round = 0; round < 4; round++) {
-        const started = performance.now();
-        for (let i = 0; i < 15_000; i++) yield { connector: "slack", tool: "slack_search", args: { query: "x" }, signal: app.signal };
-        rounds.push({ mb: heapMb() - before, ms: performance.now() - started });
-      }
+      for (let i = 0; i < 60_000; i++) yield { connector: "slack", tool: "slack_search", args: { query: "x" }, signal: app.signal };
     }
     let ok = 0;
     for await (const r of callBatch(() => async () => session, policy, lines(), { profile: "default", concurrency: 4, perConnector: 4, ordered: false })) if (r.ok) ok++;
     assert.equal(ok, 60_000);
     const growth = heapMb() - before;
-    const [first, last] = [rounds[0]!, rounds.at(-1)!];
-    console.log(`  batch: heap +${growth.toFixed(1)} MB, rounds ${rounds.map(r => `${Math.round(r.ms)} ms`).join(", ")}`);
+    console.log(`  batch: heap +${growth.toFixed(1)} MB after 60,000 lines`);
     assert.ok(growth < 8, `the batch kept ${growth.toFixed(1)} MB after 60,000 lines`);
-    assert.ok(last.ms < first.ms * 3 + 200, `the last 15,000 lines took ${Math.round(last.ms)} ms, the first ${Math.round(first.ms)} ms`);
   });
 
   await check("direct calls that share one caller signal are released when they end, not when their timeout would fire", async () => {

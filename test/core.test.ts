@@ -182,8 +182,8 @@ describe("callBatch: async iterables in and out", () => {
     expect(ordered[0]).toMatchObject({ ok: true, value: { q: "slow" }, via: "claude-code" });
   });
 
-  test("a long batch holds no abort listener for a line that is done, retried lines included", async () => {
-    // Every abort listener in place on a signal that hasn't aborted (an aborted one has dropped its once-listeners).
+  /** Counts every abort listener in place on a signal that hasn't aborted (an aborted one has dropped its once-listeners). */
+  function abortListeners() {
     const live = new Map<EventTarget, Set<unknown>>();
     const proto = EventTarget.prototype;
     const [add, remove] = [proto.addEventListener, proto.removeEventListener];
@@ -195,7 +195,14 @@ describe("callBatch: async iterables in and out", () => {
       if (type === "abort") live.get(this)?.delete(fn);
       return remove.call(this, type, fn, o);
     } as typeof remove;
-    const held = () => [...live].reduce((n, [s, fns]) => n + ((s as AbortSignal).aborted ? 0 : fns.size), 0);
+    return {
+      held: () => [...live].reduce((n, [s, fns]) => n + ((s as AbortSignal).aborted ? 0 : fns.size), 0),
+      restore: () => { [proto.addEventListener, proto.removeEventListener] = [add, remove]; },
+    };
+  }
+
+  test("a long batch holds no abort listener for a line that is done, retried lines included", async () => {
+    const { held, restore } = abortListeners();
     try {
       const tried = new Set<string>();
       const session: Session = {
@@ -216,7 +223,23 @@ describe("callBatch: async iterables in and out", () => {
       }
       expect(done).toBe(30);
       expect(most).toBeLessThanOrEqual(settings.concurrency * 3); // at most the running lines' own: never one per line done
-    } finally { [proto.addEventListener, proto.removeEventListener] = [add, remove]; }
+    } finally { restore(); }
+  });
+
+  test("a line whose session can't even be opened holds no abort listener once it has failed", async () => {
+    const { held, restore } = abortListeners();
+    try {
+      const caller = new AbortController();
+      const lines = Array.from({ length: 30 }, (_, i) => ({ ...line(`q${i}`), signal: caller.signal }));
+      const opener = () => { throw fail("VALIDATION_ERROR", "Unknown transport \"bogus\""); }; // throws before any promise
+      let done = 0, most = 0;
+      for await (const r of callBatch(opener as never, policy, lines, settings)) {
+        expect(r).toMatchObject({ ok: false, error: { code: "VALIDATION_ERROR" } });
+        if (++done > 5) most = Math.max(most, held());
+      }
+      expect(done).toBe(30);
+      expect(most).toBeLessThanOrEqual(settings.concurrency * 3);
+    } finally { restore(); }
   });
 
   test("breaking out of the loop cancels the lines still running and closes the producer", async () => {

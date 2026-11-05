@@ -305,11 +305,14 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
   const run = async (t: Task) => {
     const started = Date.now();
     t.attempts++;
-    const link = linkSignals([cancel.signal, stopRunning.signal, t.line.signal]); // let go once the line is done
     try {
       const { line } = t;
-      const read = await callRead(open(line), policy, line.profile ?? o.profile, { connector: line.connector, tool: line.tool, args: line.args },
-        line.timeoutMs ?? 30_000, link.signal).finally(() => link.dispose());
+      const link = linkSignals([cancel.signal, stopRunning.signal, line.signal]);
+      let read: ReadResult;
+      try { // let go of the signals once the line is done, however it ends (its opener can throw before any promise)
+        read = await callRead(open(line), policy, line.profile ?? o.profile, { connector: line.connector, tool: line.tool, args: line.args },
+          line.timeoutMs ?? 30_000, link.signal);
+      } finally { link.dispose(); }
       emit({ id: t.id, index: t.index, attempts: t.attempts, ms: Date.now() - started, ok: true, line, ...read });
     } catch (error) {
       if (cancel.signal.aborted) return; // left the loop: no one reads it
@@ -375,8 +378,11 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
   }
 }
 
-/** Waits ms, or until the signal aborts, whichever comes first; either way it stops listening. */
+/** Waits ms, or until the signal aborts, whichever comes first; either way it stops listening. Its timer keeps the
+ * program running: a retry is still to come. */
 const sleep = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
-  const { signal: done, dispose } = linkSignals([signal], ms);
-  done.addEventListener("abort", () => { dispose(); resolve(); }, { once: true });
+  if (signal.aborted) return resolve();
+  const done = () => { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); };
+  const timer = setTimeout(done, ms);
+  signal.addEventListener("abort", done, { once: true });
 });
