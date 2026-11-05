@@ -7,6 +7,7 @@ import { loadIndex, loadManifest, manifestIds, refresh, shortName } from "./cach
 import { BIN, runTool } from "./call";
 import { doctor, lastDoctor } from "./doctor";
 import { asPlugboardError, EXIT, exitFor, fail, type Code } from "./errors";
+import { resolveTransport } from "./direct";
 import { summaryOf } from "./flags";
 import { mode, plainText } from "./output";
 import { loadUsage, scanUsage } from "./usage";
@@ -219,9 +220,9 @@ async function main() {
     return;
   }
   const builtins = new Set(["find", "batch", "doctor", "refresh", "policy", "audit", "setup", "usage", "update"]);
-  // No cache at all: the first connector call captures once.
+  // No cache at all: the first connector call captures once, through Claude Code, which the transport direct never starts.
   if (argv[0] && !argv[0].startsWith("-") && !builtins.has(argv[0]) && !loadIndex()) {
-    try { await refresh(loadPolicy()); } catch { /* the call below reports what is missing */ }
+    try { const policy = loadPolicy(); if (resolveTransport(policy) !== "direct") await refresh(policy); } catch { /* the call below reports what is missing */ }
   }
   const commands: Record<string, Command> = {};
   let policyAliases: Record<string, string> = {};

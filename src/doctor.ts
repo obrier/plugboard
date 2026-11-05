@@ -112,7 +112,10 @@ export async function doctor(argv: string[]) {
     const session = new DirectSession([manifest], async () => { throw new Error("not direct"); }, undefined, { fallback: false });
     const result = await probe(tools, tool => invoke(session, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
     if (result.tool) add(`direct:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
-    else if (session.notDirect) add(`direct:${id}`, "warn", `calls go through Claude Code: ${session.notDirect}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
+    else if (session.notDirect && transport === "direct") {
+      blind.add(id); // the transport allows no fallback: its calls fail
+      add(`direct:${id}`, "fail", `the transport is direct and ${session.notDirect}`, `Run \`${BIN} refresh\` or \`claude /login\`, or set the transport to auto`);
+    } else if (session.notDirect) add(`direct:${id}`, "warn", `calls go through Claude Code: ${session.notDirect}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
     else {
       blind.add(id);
       add(`direct:${id}`, "fail", `the connector proxy failed a read Claude Code made: ${(result.error ?? "").slice(0, 160)}`, "Set PLUGBOARD_TRANSPORT=claude-code until Plugboard is updated");

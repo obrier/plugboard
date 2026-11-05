@@ -30,7 +30,7 @@ export type Via = Exclude<Transport, "auto">;
  * PLUGBOARD_DIRECT=0 (0.1.3) still means claude-code. Auto stays on Claude Code with a custom CLAUDE_CONFIG_DIR, where
  * Claude Code may keep its login under another name (unverified). */
 export function resolveTransport(policy: { transport?: Transport }, override?: Transport, env = process.env): Transport {
-  const fromEnv = env.PLUGBOARD_TRANSPORT ?? (env.PLUGBOARD_DIRECT === "0" ? "claude-code" : undefined);
+  const fromEnv = env.PLUGBOARD_TRANSPORT || (env.PLUGBOARD_DIRECT === "0" ? "claude-code" : undefined);
   const chosen = override ?? fromEnv ?? policy.transport ?? "auto";
   if (!TRANSPORTS.includes(chosen as Transport))
     throw fail("VALIDATION_ERROR", `Unknown transport "${chosen}" (one of ${TRANSPORTS.join(", ")})`, ["Set it in policy.toml or PLUGBOARD_TRANSPORT"]);
@@ -120,7 +120,7 @@ export class DirectSession {
     if (request.subtype === "mcp_call") {
       const tool = this.tools.get(String(request.tool));
       let refused: string | undefined;
-      if (tool?.id && this.isDirect()) {
+      if (this.isDirect() && tool?.id) {
         try { return await this.call({ id: tool.id, name: tool.name }, request.arguments, options.timeoutMs ?? 35_000) as T; } catch (error) {
           if (!(error instanceof Refused)) throw error;
           refused = error.message;

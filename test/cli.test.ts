@@ -483,3 +483,42 @@ test("args are checked before the policy, as before: a bad arg is exit 2 even fo
   expect((await run(["slack", "send-message", "--channel", "C1", "--as", "gather", "--write"])).code).toBe(2); // no --message
   expect((await run(["slack", "search-public", "--after", "notatime", "--as", "nope"])).code).toBe(2);
 });
+
+describe("transport", () => {
+  test("a bad transport is a usage error in batch too, not unreachable; an empty one is unset", async () => {
+    const line = JSON.stringify({ id: "a", connector: "slack", tool: "search-public", args: { query: "x" } });
+    const typo = await run(["batch", "--as", "gather"], { stdin: line, env: { PLUGBOARD_TRANSPORT: "drect" } });
+    expect(typo.code).toBe(2);
+    expect(JSON.parse(typo.stdout.trim()).error.code).toBe("VALIDATION_ERROR");
+    const empty = await run(["batch", "--as", "gather"], { stdin: line, env: { PLUGBOARD_TRANSPORT: "" } });
+    expect(empty.code).toBe(0); // unset: PLUGBOARD_DIRECT=0 from run() applies, so the fake Claude Code serves it
+  });
+
+  test("doctor under direct: a connector the proxy can't serve is blind, not a warning", async () => {
+    // No connector ID cached: the direct session can't serve slack, and never reads the login to find that out.
+    const path = join(root, "cache/manifests/slack.json");
+    const { server: _, ...m } = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify(m));
+    const r = await run(["doctor", "--as", "gather", "--out", "json"], { env: { PLUGBOARD_TRANSPORT: "direct" } });
+    const result = JSON.parse(r.stdout);
+    expect(result.checks.find((c: { check: string }) => c.check === "direct:slack")).toMatchObject({ status: "fail", detail: expect.stringContaining("no connector ID cached") });
+    expect(result.blind).toContain("slack");
+    expect(r.code).toBe(7);
+    // Under auto the same connector works through Claude Code: a warning naming why, not a proxy failure.
+    const auto = JSON.parse((await run(["doctor", "--as", "gather", "--out", "json"], { env: { PLUGBOARD_TRANSPORT: "auto" } })).stdout);
+    expect(auto.checks.find((c: { check: string }) => c.check === "direct:slack")).toMatchObject({ status: "warn", detail: expect.stringContaining("no connector ID cached") });
+  });
+
+  test("under direct, a call with no cache never starts Claude Code to refresh it", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "pb-empty-cache-"));
+    const marker = join(empty, "claude-started");
+    const claude = join(empty, "claude");
+    writeFileSync(claude, `#!/bin/sh\ntouch "${marker}"\nexit 1\n`, { mode: 0o755 });
+    try {
+      const r = await run(["slack", "search-public", "--query", "x"], { env: { PLUGBOARD_CACHE: join(empty, "cache"), PLUGBOARD_CLAUDE: claude, PLUGBOARD_TRANSPORT: "direct" } });
+      expect(existsSync(marker)).toBe(false);
+      expect(r.code).not.toBe(0);
+      expect(r.all).toContain("refresh");
+    } finally { rmSync(empty, { recursive: true, force: true }); }
+  });
+});

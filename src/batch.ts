@@ -64,7 +64,11 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
 
   const failAll = (list: Task[], failure: Failure) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { ...failure, retryable: false } }); };
   let client: Client;
-  try { client = await makeClient(tasks.map(t => t.p.manifest)); } catch (error) { failAll(tasks, { ...errorOf(error), code: "UNREACHABLE" }); return EXIT.UNREACHABLE; }
+  try { client = await makeClient(tasks.map(t => t.p.manifest)); } catch (error) {
+    const e = asPlugboardError(error, "UNREACHABLE");
+    failAll(tasks, errorOf(e));
+    return e.exitCode;
+  }
 
   let stopped: Failure | undefined; // a broken bridge, or a model reached: the rest of the batch fails with it
   try {
