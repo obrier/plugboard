@@ -6,6 +6,7 @@ import { captureConnectorSchemas, childEnv, POLL_MS } from "./capture";
 import { setTimeout as sleep } from "node:timers/promises";
 import { runtime as detected, type Proc, type Runtime } from "../runtime";
 import type { ToolSchema } from "./capture";
+import { markNotSent } from "../errors";
 
 export type ToolMetadata = {
   name: string;
@@ -91,6 +92,10 @@ export class ClaudeConnectors {
     private readonly schemaOptions: { claudePath: string; cwd: string; timeoutMs: number; discoveryTimeoutMs: number; runtime: Runtime },
     private readonly ownedDirectory?: string,
   ) {
+    // Claude Code never keeps a program from exiting: a request waiting for its answer keeps it running through its
+    // timeout timer, and Claude Code is stopped when the program exits.
+    proc.unref();
+    process.once("exit", this.stopOnExit);
     this.reading = this.readStdout();
     this.draining = (async () => {
       // Do not print or retain diagnostic output that could contain credentials.
@@ -124,11 +129,15 @@ export class ClaudeConnectors {
 
   get messageTypes(): Readonly<Record<string, number>> { return { ...this.counts }; }
 
+  /** Closed, or Claude Code exited: no request will be answered. */
+  get closed(): boolean { return this.closedError !== undefined; }
+
   /** Sends a control request. Never retries calls automatically. */
   async request<T = Record<string, unknown>>(
     request: ControlRequest, options: { timeoutMs?: number } = {},
   ): Promise<T> {
-    if (this.closedError) throw this.closedError;
+    // Closed or exited: this request is never sent, so a write records it as not sent.
+    if (this.closedError) throw markNotSent(new Error(this.closedError.message));
     const timeoutMs = positiveTimeout(options.timeoutMs ?? this.requestTimeoutMs);
     const requestId = crypto.randomUUID();
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -242,7 +251,10 @@ export class ClaudeConnectors {
     return this.closing ??= this.shutdown();
   }
 
+  private readonly stopOnExit = () => { if (this.proc.exitCode === null) this.proc.kill("SIGTERM"); };
+
   private async shutdown() {
+    process.removeListener("exit", this.stopOnExit);
     this.fail(new Error("Claude connector client is closed"));
     if (this.proc.exitCode === null) this.proc.kill("SIGTERM");
     const forceKill = setTimeout(() => this.proc.kill("SIGKILL"), 5_000);

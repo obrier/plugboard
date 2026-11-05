@@ -3,7 +3,7 @@ import { childEnv } from "./bridge/capture";
 import { asPlugboardError, fail, isPermissionError } from "./errors";
 import { findClaude } from "./platform";
 import type { Manifest } from "./cache";
-import { DirectSession, resolveTransport, type Transport } from "./direct";
+import { DirectSession, isZeroCost, resolveTransport, type Transport } from "./direct";
 import type { Policy } from "./policy";
 import { runtime } from "./runtime";
 
@@ -58,7 +58,7 @@ export async function costGuard(client: Pick<ClaudeConnectors, "request">) {
   } catch (error) {
     throw fail("UNREACHABLE", `get_session_cost failed: ${(error as Error).message}`);
   }
-  if (!/\$0\.0000\b/.test(text) || !/Usage:\s+0 input, 0 output, 0 cache read, 0 cache write/.test(text))
+  if (!isZeroCost(text))
     throw fail("COST_GUARD", `Session was not zero-cost: ${text.replace(/\s+/g, " ").slice(0, 200)}`, ["Stop using the bridge and investigate: a model was reached"]);
   return text;
 }

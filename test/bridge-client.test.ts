@@ -157,3 +157,43 @@ test("every child skips Claude Code's nonessential traffic: its telemetry flush 
   const result = await client.callTool<{ value: string }>("mcp__fake__echo", { action: "env", name: "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" });
   expect(result.structuredContent?.value).toBe("1");
 });
+
+// A program that used Claude Code and never closed it still exits at once, and takes Claude Code with it.
+for (const target of ["bun", "node"] as const)
+  // The WSL2 job has no Node: the other jobs run the Node case.
+  test.skipIf(target === "node" && !Bun.which("node"))(`an open client never keeps a program from exiting, and is stopped when it exits (${target})`, async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "connector-exit-test-"));
+    directories.push(cwd);
+    const script = join(cwd, "use.ts");
+    await Bun.write(script, `import { ClaudeConnectors } from ${JSON.stringify(join(import.meta.dir, "../src/bridge/client"))};
+const client = await ClaudeConnectors.connect({ claudePath: ${JSON.stringify(`${import.meta.dir}/fixtures/claude-control.ts`)}, cwd: ${JSON.stringify(cwd)} });
+await client.listServers();
+console.log("used");
+`);
+    let cmd = ["bun", script];
+    if (target === "node") {
+      const out = join(cwd, "use.mjs");
+      expect(Bun.spawnSync(["bun", "build", script, "--target=node", `--outfile=${out}`]).exitCode).toBe(0);
+      cmd = ["node", out];
+    }
+    const started = Date.now();
+    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+    const exit = await Promise.race([proc.exited, Bun.sleep(10_000).then(() => "hung")]);
+    if (exit === "hung") proc.kill();
+    expect(exit).toBe(0);
+    expect(await new Response(proc.stdout).text()).toContain("used");
+    expect(Date.now() - started).toBeLessThan(8_000);
+    const pid = Number(await Bun.file(join(cwd, "pid")).text());
+    await Bun.sleep(200);
+    expect(() => process.kill(pid, 0)).toThrow(); // Claude Code was stopped with it
+  }, 20_000);
+
+test("a request to a client whose Claude Code exited was never sent, and the client says it's closed", async () => {
+  const { wasNotSent } = await import("../src/errors");
+  const client = await connect();
+  await client.request({ subtype: "mcp_call", tool: "x", arguments: { action: "exit" } }).catch(() => undefined);
+  await Bun.sleep(100);
+  expect(client.closed).toBe(true);
+  const error = await client.request({ subtype: "mcp_status" }).catch(e => e);
+  expect(wasNotSent(error)).toBe(true);
+});

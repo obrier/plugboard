@@ -31,7 +31,7 @@ const pb = createPlugboard({ policy: "./policy.toml", profile: "reader" }); // t
 What the shared session needs that today's session doesn't do:
 
 1. **It grows on demand.** Today a session is opened for the connectors known up front (the CLI's one call, batch's lines). The shared one takes connectors as they are first called: on the direct path that is only an ID lookup; once fallen back to Claude Code, it waits for that connector's discovery.
-2. **It never keeps a program from exiting.** The direct path holds no process. A Claude Code fallback is a child process: it closes itself when idle (about 30 s) and on process exit; `close()` stays for anyone who wants to be explicit. To check: that Node's fetch keeps no idle socket holding the event loop.
+2. **It never keeps a program from exiting.** The direct path holds no process. A Claude Code fallback is a child process: it closes itself when idle (about 30 s) and on process exit; `close()` stays for anyone who wants to be explicit. Checked on 2026-11-05: Node's fetch keeps no idle socket holding the event loop (a fetch to a server in another process, then nothing: Node 22 exits 64 ms after, Node 26 20 ms, Bun 1 ms). Under Bun a child whose output is read keeps the program running even unref'd, so both runtimes spawn through `node:child_process`.
 3. **It stays valid over hours.** Before each direct call it checks the login's expiry and re-reads the login when close, since a Claude Code fallback may have renewed it.
 
 ## 2. A call is one object, the shape of a batch line

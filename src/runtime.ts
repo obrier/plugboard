@@ -3,6 +3,8 @@
 // APIs both runtimes share (node:fs, node:timers/promises) are used directly, not through here.
 // Both implementations keep one contract: spawn resolves once the process started (or rejects
 // with the errno), and a process killed by a signal exits 128 + the signal's number.
+// spawn is node:child_process's on both: under Bun, a child whose output is being read keeps the program
+// running even once unref'd (checked on Bun 1.4), and an idle child must never keep a program from exiting.
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { constants } from "node:os";
@@ -17,6 +19,8 @@ export type Proc = {
   /** Its exit status: the code, or 128 + the signal's number. */
   exited: Promise<number>;
   kill(signal?: NodeJS.Signals): void;
+  /** Lets the program exit while this process runs, its pipes included. */
+  unref(): void;
 };
 export type Server = { port: number; stop(): void };
 export type Runtime = {
@@ -33,18 +37,25 @@ export type Runtime = {
 const status = (code: number | null, signal: string | null) =>
   code ?? (signal ? 128 + (constants.signals[signal as NodeJS.Signals] ?? 0) : null);
 
+async function spawn(cmd: string[], { cwd, env }: { cwd: string; env: Env }): Promise<Proc> {
+  const child = nodeSpawn(cmd[0]!, cmd.slice(1), { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  // Node reports a failed start as an event, not a throw: wait for one or the other.
+  await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  const exited = new Promise<number>(resolve => child.once("close", (code, signal) => resolve(status(code, signal) ?? 1)));
+  child.stdin.on("error", () => {}); // writing to a process that exited: its reader reports it
+  return {
+    stdin: { write: text => { child.stdin.write(text); }, flush: () => {}, end: () => { child.stdin.end(); } },
+    stdout: child.stdout, stderr: child.stderr,
+    get exitCode() { return status(child.exitCode, child.signalCode); },
+    exited,
+    kill: signal => { child.kill(signal); },
+    unref: () => { child.unref(); for (const pipe of [child.stdin, child.stdout, child.stderr]) (pipe as { unref?: () => void }).unref?.(); },
+  };
+}
+
 export const bunRuntime: Runtime = {
   name: `bun ${process.versions.bun}`,
-  async spawn(cmd, { cwd, env }) {
-    const proc = Bun.spawn(cmd, { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" }); // throws the errno itself
-    return {
-      stdin: { write: text => { proc.stdin.write(text); }, flush: () => { proc.stdin.flush(); }, end: () => { proc.stdin.end(); } },
-      stdout: proc.stdout, stderr: proc.stderr,
-      get exitCode() { return status(proc.exitCode, proc.signalCode); },
-      exited: proc.exited.then(() => status(proc.exitCode, proc.signalCode) ?? 1),
-      kill: signal => proc.kill(signal),
-    };
-  },
+  spawn,
   spawnSync(cmd, { env }) {
     const proc = Bun.spawnSync(cmd, { env, stdout: "pipe", stderr: "ignore" });
     return { exitCode: proc.exitCode, stdout: proc.stdout.toString() };
@@ -57,20 +68,7 @@ export const bunRuntime: Runtime = {
 
 export const nodeRuntime: Runtime = {
   name: `node ${process.versions.node}`,
-  async spawn(cmd, { cwd, env }) {
-    const child = nodeSpawn(cmd[0]!, cmd.slice(1), { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    // Node reports a failed start as an event, not a throw: wait for one or the other.
-    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-    const exited = new Promise<number>(resolve => child.once("close", (code, signal) => resolve(status(code, signal) ?? 1)));
-    child.stdin.on("error", () => {}); // writing to a process that exited: its reader reports it
-    return {
-      stdin: { write: text => { child.stdin.write(text); }, flush: () => {}, end: () => { child.stdin.end(); } },
-      stdout: child.stdout, stderr: child.stderr,
-      get exitCode() { return status(child.exitCode, child.signalCode); },
-      exited,
-      kill: signal => { child.kill(signal); },
-    };
-  },
+  spawn,
   spawnSync(cmd, { env }) {
     const proc = nodeSpawnSync(cmd[0]!, cmd.slice(1), { env, stdio: ["ignore", "pipe", "ignore"] });
     if (proc.error) throw proc.error;

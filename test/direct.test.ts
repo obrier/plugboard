@@ -229,3 +229,144 @@ test("a session says why it isn't direct", async () => {
   await direct.request<unknown>(CALL);
   expect(direct.notDirect).toBeUndefined();
 });
+
+describe("the shared session", () => {
+  const drive: Manifest = {
+    id: "google-drive", connectorName: "claude.ai Google Drive", capturedAt: "2026-11-05T00:00:00Z",
+    server: { type: "claudeai-proxy", url: "https://drivemcp.googleapis.com/mcp/v1", id: "mcpsrv_01drive" },
+    tools: [{ name: "list_recent_files", sourceName: "mcp__claude_ai_Google_Drive__list_recent_files", inputSchema: { type: "object" } }],
+  };
+  const DRIVE_CALL = { subtype: "mcp_call", tool: drive.tools[0]!.sourceName, arguments: {} };
+  const logins = (...list: Login[]) => { let i = 0; return () => list[Math.min(i++, list.length - 1)]; };
+  const VIA_CLAUDE = { content: [{ type: "text", text: "via claude" }] };
+
+  test("takes connectors on as they are first called", async () => {
+    const p = proxy(ok()), c = claude();
+    const s = new DirectSession([], c.open as never, { login: () => login, fetch: p.fetch });
+    s.use([calendar]);
+    expect(await s.request<unknown>(CALL)).toEqual(RESULT);
+    s.use([drive, calendar]); // a connector already taken on is no change
+    expect(await s.request<unknown>(DRIVE_CALL)).toEqual(RESULT);
+    expect(p.sent.map(x => x.url)).toEqual([`${PROXY_ORIGIN}/v1/mcp/mcpsrv_01cal`, `${PROXY_ORIGIN}/v1/mcp/mcpsrv_01drive`]);
+    expect(c.opened()).toBe(0);
+  });
+
+  test("a connector the proxy refuses goes through Claude Code; one taken on later still goes direct", async () => {
+    const p = proxy(s => (s.url.endsWith("mcpsrv_01cal") ? new Response("no", { status: 404 }) : ok()(s))), c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: p.fetch });
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    s.use([drive]);
+    expect(await s.request<unknown>(DRIVE_CALL)).toEqual(RESULT);
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE); // the refused one stays with Claude Code, not asked again
+    expect(p.sent).toHaveLength(2);
+  });
+
+  test("once Claude Code runs, a connector taken on later waits for its own discovery there", async () => {
+    const p = proxy(() => new Response("no", { status: 403 })), c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: p.fetch });
+    await s.request<unknown>(CALL);
+    s.use([drive]);
+    await s.request<unknown>(DRIVE_CALL).catch(() => undefined); // the fake lists only calendar: refused as not connected
+    expect(c.log).toContain(`wait:${drive.connectorName}`);
+  });
+
+  test("a login close to expiring is read again before a call, so a renewed one is used", async () => {
+    const soon = { ...login, accessToken: "old-token", expiresAt: Date.now() + 4 * 60_000 }; // usable, but within five minutes
+    const p = proxy(ok()), c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: logins(soon, login), fetch: p.fetch });
+    await s.request<unknown>(CALL);
+    await s.request<unknown>(CALL);
+    expect(p.sent.map(x => x.headers.get("authorization"))).toEqual(["Bearer old-token", "Bearer secret-token"]);
+  });
+
+  test("a login too close to expiring sends that call through Claude Code, and the next goes direct once it's renewed", async () => {
+    const expiring = { ...login, expiresAt: Date.now() + 30_000 };
+    const p = proxy(ok()), c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: logins(expiring, login), fetch: p.fetch });
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    expect(await s.request<unknown>(CALL)).toEqual(RESULT);
+    expect(p.sent).toHaveLength(1);
+  });
+
+  test("a login the proxy refused (401) isn't sent again; a renewed one is", async () => {
+    const refusedToken = { ...login, accessToken: "refused-token" };
+    const p = proxy(x => (x.headers.get("authorization") === "Bearer refused-token" ? new Response("no", { status: 401 }) : ok()(x))), c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: logins(refusedToken, refusedToken, login), fetch: p.fetch });
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE); // the same login read again: not sent again
+    expect(await s.request<unknown>(CALL)).toEqual(RESULT);
+    expect(p.sent.map(x => x.headers.get("authorization"))).toEqual(["Bearer refused-token", "Bearer secret-token"]);
+  });
+
+  test("Claude Code, once idle, is closed, and started again when a call needs it", async () => {
+    const p = proxy(() => new Response("no", { status: 404 })), c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: p.fetch }, { idleMs: 50 });
+    await s.request<unknown>(CALL);
+    await Bun.sleep(120);
+    expect(c.log).toContain("close");
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    expect(c.opened()).toBe(2);
+    await s.close();
+  });
+});
+
+describe("the shared session, when Claude Code fails", () => {
+  const VIA_CLAUDE = { content: [{ type: "text", text: "via claude" }] };
+  const refusing = () => proxy(() => new Response("no", { status: 404 }));
+  /** A Claude Code that can crash, or report a cost. */
+  function claudeThat(o: { cost?: string; failCalls?: boolean } = {}) {
+    let opened = 0;
+    const clients: { closed: boolean }[] = [];
+    const open = async () => {
+      opened++;
+      const c = {
+        closed: false,
+        request: async (req: any) => {
+          if (c.closed) throw new Error("Claude connector client is closed");
+          if (req.subtype === "get_session_cost") return { text: o.cost ?? "Total cost: $0.0000\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" };
+          if (o.failCalls) throw new Error("the connector failed");
+          return VIA_CLAUDE;
+        },
+        waitForServers: async () => [{ name: calendar.connectorName, status: "connected", tools: [] }],
+        close: async () => { c.closed = true; },
+      };
+      clients.push(c);
+      return c;
+    };
+    return { open, clients, opened: () => opened };
+  }
+
+  test("a Claude Code that crashed is replaced by the next call that needs it", async () => {
+    const c = claudeThat();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: refusing().fetch });
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    c.clients[0]!.closed = true; // it exited
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    expect(c.opened()).toBe(2);
+    await s.close();
+  });
+
+  test("a cost Claude Code reached is still reported once it closed when idle", async () => {
+    const c = claudeThat({ cost: "Total cost: $0.1200\nUsage: 10 input, 5 output, 0 cache read, 0 cache write", failCalls: true });
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: refusing().fetch }, { idleMs: 30 });
+    await s.request<unknown>(CALL).catch(() => undefined); // failed: the core skips its cost check
+    await Bun.sleep(80); // closed when idle
+    await expect(costGuard(s)).rejects.toMatchObject({ code: "COST_GUARD" });
+  });
+
+  test("a Claude Code that crashed before its last calls' cost was checked fails the cost check", async () => {
+    const c = claudeThat({ failCalls: true });
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: refusing().fetch });
+    await s.request<unknown>(CALL).catch(() => undefined);
+    c.clients[0]!.closed = true; // it exited before anyone asked its cost
+    await expect(costGuard(s)).rejects.toMatchObject({ code: "COST_GUARD" });
+  });
+
+  test("a refreshed manifest replaces the one taken on: its new connector ID is called", async () => {
+    const p = proxy(ok()), c = claudeThat();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: p.fetch });
+    s.use([{ ...calendar, capturedAt: "2026-11-06T00:00:00Z", server: { ...calendar.server!, id: "mcpsrv_02cal" } }]);
+    await s.request<unknown>(CALL);
+    expect(p.sent[0]!.url).toBe(`${PROXY_ORIGIN}/v1/mcp/mcpsrv_02cal`);
+  });
+});
