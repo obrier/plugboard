@@ -6,7 +6,7 @@ import { batchCommand } from "./batch";
 import { loadIndex, loadManifest, manifestIds, refresh, shortName } from "./cache";
 import { BIN, runTool } from "./call";
 import { doctor, lastDoctor } from "./doctor";
-import { asPlugboardError, EXIT, exitFor, fail, type Code } from "./errors";
+import { asPlugboardError, EXIT, fail, type Code } from "./errors";
 import { resolveTransport } from "./direct";
 import { summaryOf } from "./flags";
 import { mode, plainText } from "./output";
@@ -186,12 +186,17 @@ let errorsOnStdout = mode.axi;
 
 /** Errors: AXI shape on stdout with --axi (unless an explicit --out asked for another format); otherwise `error: … (CODE)` and hints on stderr. */
 function reportError(error: unknown): number {
-  // axi-sdk-js's own errors (its argument parsing) become ours here, at the CLI's edge: the core never sees its type.
-  const e = asPlugboardError(error instanceof AxiError
-    ? fail((error.code in EXIT ? error.code : "UNKNOWN") as Code, error.message, error.suggestions) : error);
+  const e = edgeError(error);
   if (errorsOnStdout) process.stdout.write(`${renderError(e.message, e.code, e.hints)}\n`);
   else process.stderr.write(`error: ${e.message} (${e.code})\n${e.hints.map(h => `hint: ${h}\n`).join("")}`);
-  return exitFor(e);
+  return e.exitCode;
+}
+
+/** An error as the CLI reports it. axi-sdk-js's own errors keep their code, with Plugboard's exit code for it where
+ * Plugboard has one: they're converted here, at the CLI's edge, so the core never sees their type. */
+export function edgeError(error: unknown): { code: string; message: string; hints: string[]; exitCode: number } {
+  if (error instanceof AxiError) return { code: error.code, message: error.message, hints: error.suggestions ?? [], exitCode: EXIT[error.code as Code] ?? 1 };
+  return asPlugboardError(error);
 }
 
 type Command = (args: string[]) => unknown;
