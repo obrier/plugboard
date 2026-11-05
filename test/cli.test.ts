@@ -31,7 +31,7 @@ beforeEach(() => {
   writeFileSync(join(root, "policy.toml"), POLICY);
   rmSync(join(root, "transforms.toml"), { force: true });
   const servers = [
-    { name: "claude.ai Slack", status: "connected", tools: [
+    { name: "claude.ai Slack", status: "connected", config: { type: "claudeai-proxy", url: "https://mcp.slack.com/mcp", id: "mcpsrv_01slack" }, tools: [
       { name: "slack_search_public", annotations: { readOnly: true } }, { name: "slack_send_message" },
       { name: "slack_delete_message", annotations: { destructive: true } }, { name: "slack_create_note" }] },
     { name: "claude.ai Gmail", status: "connected", tools: [{ name: "list_labels", annotations: { readOnly: true } }] },
@@ -63,6 +63,44 @@ const calls = () => (existsSync(join(fake, "calls.jsonl")) ? readFileSync(join(f
 const audit = () => readFileSync(join(root, "state/audit.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l));
 const SEND = ["slack", "send-message", "--channel-id", "D1", "--message", "hello"];
 const planHash = async (args: string[]) => JSON.parse((await run([...args, "--plan", "--out", "json"])).stdout).hash as string;
+
+const spawns = () => readFileSync(join(fake, "spawns.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l).only as string[] | null);
+const READ = ["slack", "search-public", "--query", "x", "--out", "json"];
+
+describe("one connector only (PLUGBOARD_ONE_CONNECTOR=1)", () => {
+  const ONE = { PLUGBOARD_ONE_CONNECTOR: "1" };
+  test("refresh's manifest keeps the connector's claude.ai config", () => {
+    const m = JSON.parse(readFileSync(join(root, "cache/manifests/slack.json"), "utf8"));
+    expect(m.server).toEqual({ type: "claudeai-proxy", url: "https://mcp.slack.com/mcp", id: "mcpsrv_01slack" });
+  });
+  test("a call starts Claude Code with only the connector it needs", async () => {
+    const r = await run(READ, { env: ONE });
+    expect(r.code).toBe(0);
+    expect(spawns()).toEqual([["claude.ai Slack"]]);
+  });
+  test("a cached ID claude.ai no longer knows falls back to a normal start, and the call goes through", async () => {
+    const path = join(root, "cache/manifests/slack.json");
+    const m = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify({ ...m, server: { ...m.server, id: "mcpsrv_01gone" } }));
+    const r = await run(READ, { env: ONE });
+    expect(r.code).toBe(0);
+    expect(spawns()).toEqual([["claude.ai Slack"], null]);
+    expect(calls()).toHaveLength(1);
+  });
+  test("a connector cached without a config, or the flag off, starts normally", async () => {
+    expect((await run(READ)).code).toBe(0);
+    const path = join(root, "cache/manifests/slack.json");
+    const { server: _, ...m } = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify(m));
+    expect((await run(READ, { env: ONE })).code).toBe(0);
+    expect(spawns()).toEqual([null, null]);
+  });
+  test("a batch starts with only the connectors its lines need", async () => {
+    const r = await run(["batch", "--as", "gather"], { stdin: JSON.stringify({ connector: "slack", tool: "search-public", args: { query: "x" } }) + "\n", env: ONE });
+    expect(r.code).toBe(0);
+    expect(spawns()).toEqual([["claude.ai Slack"]]);
+  });
+});
 
 test("read: transforms, unwrap, select, md; cost guard passes", async () => {
   const r = await run(["slack", "search-public", "--query", "x", "--after", "-1d", "--select", "user", "--out", "json"]);

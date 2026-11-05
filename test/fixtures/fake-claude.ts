@@ -9,6 +9,17 @@ const dir = process.env.FAKE_DIR!;
 if (process.argv[2] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })); process.exit(0); }
 const flag = (name: string) => existsSync(join(dir, name));
+// Each start is logged with the servers it was limited to (null: all of them).
+const at = process.argv.indexOf("--mcp-config");
+const only: Record<string, { id?: string }> | null = process.argv.includes("--strict-mcp-config") && at > 0 ? JSON.parse(process.argv[at + 1]!).mcpServers : null;
+appendFileSync(join(dir, "spawns.jsonl"), JSON.stringify({ only: only && Object.keys(only) }) + "\n");
+const proxy = (url: string, id: string) => ({ type: "claudeai-proxy", url, id });
+// As Claude Code does: a server passed with an ID claude.ai doesn't know fails ("Server not found").
+const limit = (servers: { name: string; status: string; config: { id: string }; tools: unknown[] }[]) => only === null ? servers
+  : Object.entries(only).map(([name, config]) => {
+    const known = servers.find(s => s.name === name && s.config.id === config.id);
+    return known ?? { name, status: "failed", error: "Server not found", config, tools: [] };
+  });
 const reply = (id: string, payload: object, error?: string) => process.stdout.write(JSON.stringify({ type: "control_response",
   response: { subtype: error ? "error" : "success", request_id: id, ...(error ? { error } : { response: payload }) } }) + "\n");
 const count = (name: string) => {
@@ -24,15 +35,15 @@ for await (const line of createInterface({ input: process.stdin })) {
   const { request_id: id, request } = message;
   switch (request.subtype) {
     case "initialize": reply(id, {}); break;
-    case "mcp_status": reply(id, { mcpServers: [
-      { name: "claude.ai Slack", status: "connected", tools: [
+    case "mcp_status": reply(id, { mcpServers: limit([
+      { name: "claude.ai Slack", status: "connected", config: proxy("https://mcp.slack.com/mcp", "mcpsrv_01slack"), tools: [
         { name: "slack_search_public", annotations: { readOnly: true } },
         { name: "slack_send_message" },
         { name: "slack_delete_message", annotations: { destructive: true } },
         { name: "slack_create_note" },
       ] },
-      { name: "claude.ai Gmail", status: flag("gmail-connected") ? "connected" : "needs-auth", tools: [] },
-    ] }); break;
+      { name: "claude.ai Gmail", status: flag("gmail-connected") ? "connected" : "needs-auth", config: proxy("https://gmailmcp.googleapis.com/mcp/v1", "mcpsrv_01gmail"), tools: [] },
+    ]) }); break;
     case "mcp_call": {
       appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ tool: request.tool, args: request.arguments }) + "\n");
       const mode = request.arguments?.query ?? request.arguments?.message;

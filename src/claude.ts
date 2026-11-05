@@ -2,6 +2,7 @@ import { ClaudeConnectors } from "./bridge/client";
 import { childEnv } from "./bridge/capture";
 import { asAxiError, fail, isPermissionError } from "./errors";
 import { findClaude } from "./platform";
+import type { Manifest } from "./cache";
 import type { Policy } from "./policy";
 import { runtime } from "./runtime";
 
@@ -22,11 +23,28 @@ export function authStatus(path: string): { loggedIn: boolean; method?: string }
   try { const data = JSON.parse(out); return { loggedIn: data.loggedIn === true, method: data.authMethod }; } catch { return undefined; }
 }
 
-/** Connect, mapping spawn and protocol failures to BRIDGE_BROKEN. */
-export async function connect(policy: Policy) {
+/** With PLUGBOARD_ONE_CONNECTOR=1, a session for these connectors starts Claude Code with only them, from the
+ * config `refresh` cached (~220 ms less discovery). Any of them not connected (an ID claude.ai no longer knows
+ * fails within a second) closes that session for a normal start, which reports the connector's real state. */
+async function connectOnly(path: string, needs: Manifest[]) {
+  const wanted = [...new Map(needs.map(m => [m.connectorName, m])).values()];
+  if (process.env.PLUGBOARD_ONE_CONNECTOR !== "1" || !wanted.length || !wanted.every(m => m.server)) return undefined;
+  let client: ClaudeConnectors | undefined;
+  try {
+    client = await ClaudeConnectors.connect({ claudePath: path, discoveryTimeoutMs: 10_000,
+      mcpServers: Object.fromEntries(wanted.map(m => [m.connectorName, m.server!])) });
+    const servers = await client.waitForServers(wanted.map(m => m.connectorName));
+    if (wanted.every(m => servers.some(s => s.name === m.connectorName && s.status === "connected"))) return client;
+  } catch { /* the normal start below reports it */ }
+  await client?.close();
+  return undefined;
+}
+
+/** Connect, mapping spawn and protocol failures to BRIDGE_BROKEN. `needs`: the connectors the session will call. */
+export async function connect(policy: Policy, needs: Manifest[] = []) {
   const path = claudePath(policy);
   try {
-    return await ClaudeConnectors.connect({ claudePath: path });
+    return (await connectOnly(path, needs)) ?? await ClaudeConnectors.connect({ claudePath: path });
   } catch (error) {
     const e = asAxiError(error, "BRIDGE_BROKEN");
     // Not allowed to start it or make its temp folder: an environment problem, not a broken protocol.

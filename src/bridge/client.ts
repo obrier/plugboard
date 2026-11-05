@@ -18,6 +18,8 @@ export type ConnectorServer = {
   scope?: string;
   transport?: string;
   error?: string;
+  /** How Claude Code reaches it, as `mcp_status` reports it: a claude.ai connector's is `{type: "claudeai-proxy", url, id}`. */
+  config?: Record<string, unknown>;
   tools: ToolMetadata[];
 };
 export type ConnectorTool = ToolMetadata & { serverName: string; toolName: string };
@@ -37,6 +39,9 @@ export type ClientOptions = {
   schemaTimeoutMs?: number;
   /** Bun's or Node's process and server APIs; detected unless given (tests run both). */
   runtime?: Runtime;
+  /** Start the child with only these MCP servers (`--strict-mcp-config --mcp-config`), as `mcp_status` reports
+   * them in `config`, keyed by server name. Unset: every server Claude Code would load. */
+  mcpServers?: Record<string, Record<string, unknown>>;
 };
 export type ControlRequest = { subtype: string; [key: string]: unknown };
 
@@ -58,13 +63,14 @@ function positiveTimeout(value: number) {
   if (!Number.isFinite(value) || value <= 0) throw new Error("Timeout must be a positive finite number");
   return value;
 }
-function spawnClaude(runtime: Runtime, path: string, cwd: string): Promise<Proc> {
+function spawnClaude(runtime: Runtime, path: string, cwd: string, mcpServers?: Record<string, Record<string, unknown>>): Promise<Proc> {
   return runtime.spawn([
     path, "--print", "--verbose",
     "--input-format", "stream-json", "--output-format", "stream-json",
     "--no-session-persistence", "--setting-sources", "",
     "--settings", '{"disableAllHooks":true}', "--tools", "",
     "--permission-mode", "dontAsk", "--no-chrome",
+    ...(mcpServers ? ["--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers })] : []),
   ], { cwd, env: childEnv() });
 }
 
@@ -108,7 +114,7 @@ export class ClaudeConnectors {
       const claudePath = options.claudePath ?? findClaude();
       const cwd = options.cwd ?? ownedDirectory!;
       const runtime = options.runtime ?? detected;
-      const proc = await spawnClaude(runtime, claudePath, cwd);
+      const proc = await spawnClaude(runtime, claudePath, cwd, options.mcpServers);
       client = new ClaudeConnectors(proc, timeout, discoveryTimeout,
         { claudePath, cwd, timeoutMs: schemaTimeout, discoveryTimeoutMs: discoveryTimeout, runtime }, ownedDirectory);
       await client.request({ subtype: "initialize" });
@@ -161,6 +167,7 @@ export class ClaudeConnectors {
         scope: typeof value.scope === "string" ? value.scope : undefined,
         transport: record(value.config) && typeof value.config.type === "string" ? value.config.type : undefined,
         error: typeof value.error === "string" ? value.error : undefined,
+        config: record(value.config) ? value.config : undefined,
         tools: Array.isArray(value.tools) ? value.tools.filter(tool => record(tool) && typeof tool.name === "string") as ToolMetadata[] : [],
       };
     });
