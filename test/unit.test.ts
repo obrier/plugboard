@@ -461,3 +461,13 @@ describe("PlugboardError", () => {
     expect("BRIDGE_BROKEN" in EXIT).toBe(false);
   });
 });
+
+describe("the CLI's edge", () => {
+  test("an axi-sdk error keeps its own code, and its exit code where Plugboard has one", async () => {
+    const { AxiError } = await import("axi-sdk-js");
+    const { edgeError } = await import("../src/cli");
+    expect(edgeError(new AxiError("no registry", "UPDATE_ERROR", ["try later"]))).toMatchObject({ code: "UPDATE_ERROR", message: "no registry", hints: ["try later"], exitCode: 1 });
+    expect(edgeError(new AxiError("bad flag", "VALIDATION_ERROR")).exitCode).toBe(2);
+    expect(edgeError(new Error("boom"))).toMatchObject({ code: "UNKNOWN", exitCode: 1 });
+  });
+});

@@ -11,7 +11,7 @@ import { authStatus, claudePath, claudeVersion, connectClaude, costGuard } from 
 import { DirectSession, resolveTransport } from "./direct";
 import { asPlugboardError, EXIT, PlugboardError } from "./errors";
 import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, saveJson, saveRecord, stateDir, windowsClaudeFromWSL } from "./platform";
-import { classify, DEFAULT_ALIASES, loadPolicy, matches, probeTools, profileFor, type Policy, type Profile } from "./policy";
+import { classify, decide, DEFAULT_ALIASES, loadPolicy, matches, probeTools, profileFor, type Policy, type Profile } from "./policy";
 
 type Status = "ok" | "warn" | "fail" | "info";
 type Check = { check: string; status: Status; detail: string };
@@ -68,11 +68,17 @@ export async function doctor(argv: string[]) {
   add("platform", onC.length ? "warn" : "ok", platformLabel() + (onC.length ? `; on the Windows drive (slow, file modes ignored): ${onC.join(", ")}` : ""),
     "Keep PLUGBOARD_CACHE, PLUGBOARD_STATE and PLUGBOARD_POLICY inside the Linux home");
 
+  let transport = "auto";
+  try { transport = resolveTransport(policy); } catch (error) { add("transport", "fail", (error as Error).message, "Use auto, direct or claude-code"); }
+  // Under direct, calls never start Claude Code, so doctor checks what they use instead: the cache and the proxy.
+  const direct = transport === "direct";
+
   // 1–3: binary, version, login (no protocol needed)
   const path = claudePath(policy);
-  const version = existsSync(path) ? claudeVersion(path) : undefined;
-  const windowsClaude = version ? undefined : windowsClaudeFromWSL();
-  add("binary", version ? "ok" : "fail", version ? collapseHome(path) : `${collapseHome(path)} missing or not runnable`
+  const version = !direct && existsSync(path) ? claudeVersion(path) : undefined;
+  const windowsClaude = version || direct ? undefined : windowsClaudeFromWSL();
+  if (direct) add("claude-code", "info", `not checked${values.schemas ? ", nor schema drift" : ""}: the transport is direct, so calls never start Claude Code (\`plugboard refresh\` still needs it)`);
+  else add("binary", version ? "ok" : "fail", version ? collapseHome(path) : `${collapseHome(path)} missing or not runnable`
     + (windowsClaude ? `; found Windows' ${windowsClaude}, which is a separate install with its own login` : ""),
     windowsClaude ? "Install Claude Code inside WSL (curl -fsSL https://claude.ai/install.sh | bash), then `claude` and /login"
       : "Install Claude Code, or set claude_path in policy.toml");
@@ -85,7 +91,7 @@ export async function doctor(argv: string[]) {
   if (lastGood && versions && !existsSync(join(versions, lastGood)))
     add("rollback", "warn", `last good version ${lastGood} is no longer on disk`);
   const auth = version ? authStatus(path) : undefined;
-  add("login", auth?.loggedIn ? "ok" : "fail", auth ? (auth.loggedIn ? `logged in (${auth.method ?? "?"})` : "not logged in") : "auth status unavailable", "Run `claude` and /login");
+  if (!direct) add("login", auth?.loggedIn ? "ok" : "fail", auth ? (auth.loggedIn ? `logged in (${auth.method ?? "?"})` : "not logged in") : "auth status unavailable", "Run `claude` and /login");
 
   // 9: policy (no spawn)
   let prof: Profile | undefined;
@@ -103,23 +109,49 @@ export async function doctor(argv: string[]) {
       "Edit policy.toml, or run `plugboard refresh` if the tools are new");
   } catch (error) { add("policy", "fail", (error as Error).message, "Fix policy.toml"); }
   const required = prof ? requiredConnectors(prof) : [];
-  let transport = "auto";
-  try { transport = resolveTransport(policy); } catch (error) { add("transport", "fail", (error as Error).message, "Use auto, direct or claude-code"); }
 
-  /** The same read as calls make it: direct to the connector proxy, never through Claude Code. A proxy that
-   * answers but fails a read Claude Code made leaves the connector's calls failing with no fallback: blind. */
+  /** A connector as direct calls reach it: first what every call checks (a connector ID, a usable login), then
+   * the same read as calls make, never through Claude Code. Where calls can't go direct: under auto they go
+   * through Claude Code (a warning), under direct they fail (blind). A read the proxy fails after the request
+   * left fails calls under either: blind. */
   async function checkDirect(id: string, manifest: Manifest, tools: ManifestTool[]) {
     const session = new DirectSession([manifest], async () => { throw new Error("not direct"); }, undefined, { fallback: false });
+    const notDirect = (why: string) => {
+      if (!direct) return add(`direct:${id}`, "warn", `calls go through Claude Code: ${why}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
+      blind.add(id); // the transport allows no fallback: its calls fail
+      add(`direct:${id}`, "fail", `the transport is direct and ${why}`, `Run \`${BIN} refresh\` or \`claude /login\`, or set the transport to auto`);
+    };
+    const why = session.unusable();
+    if (why) return notDirect(why);
+    if (!tools.length) return add(`direct:${id}`, "info", `connector ID and login ok; not read: ${profile} allows no read tool here that runs without arguments`);
     const result = await probe(tools, tool => invoke(session, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
     if (result.tool) add(`direct:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
-    else if (session.notDirect && transport === "direct") {
-      blind.add(id); // the transport allows no fallback: its calls fail
-      add(`direct:${id}`, "fail", `the transport is direct and ${session.notDirect}`, `Run \`${BIN} refresh\` or \`claude /login\`, or set the transport to auto`);
-    } else if (session.notDirect) add(`direct:${id}`, "warn", `calls go through Claude Code: ${session.notDirect}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
+    else if (session.notDirect) notDirect(session.notDirect); // the proxy refused the request (400, 401, 403, 404, no connection)
     else {
       blind.add(id);
-      add(`direct:${id}`, "fail", `the connector proxy failed a read Claude Code made: ${(result.error ?? "").slice(0, 160)}`, "Set PLUGBOARD_TRANSPORT=claude-code until Plugboard is updated");
+      add(`direct:${id}`, "fail", `the connector proxy failed a read${direct ? "" : " Claude Code made"}: ${(result.error ?? "").slice(0, 160)}`,
+        direct ? "Set the transport to auto or claude-code until Plugboard is updated" : "Set PLUGBOARD_TRANSPORT=claude-code until Plugboard is updated");
     }
+  }
+
+  // 10, under direct: each required connector, as its calls reach it. A profile that names none (`*:` patterns) can
+  // call any cached connector it allows a tool on: those are checked instead.
+  const allowsAny = (id: string) => (loadManifest(id)?.tools ?? []).some(tool => {
+    try { decide(policy, profile, id, tool, classify(policy, id, tool) === "write"); return true; } catch { return false; }
+  });
+  const reachable = !direct ? [] : required.length ? required : manifestIds().filter(allowsAny);
+  if (direct && !manifestIds().length) {
+    broken = true;
+    add("direct", "fail", "no connector is cached, so no call can be made", `Run \`${BIN} refresh\` where Claude Code can start`);
+  } else if (direct && !reachable.length) add("direct", "info", `no connector checked: ${profile} allows no tool on a cached connector`);
+  for (const id of reachable) {
+    const manifest = loadManifest(id);
+    if (!manifest) {
+      blind.add(id);
+      add(`direct:${id}`, "fail", "not in the cache, so its calls can't be made", `Run \`${BIN} refresh\` where Claude Code can start`);
+      continue;
+    }
+    await checkDirect(id, manifest, probeTools(policy, profile, id, manifest.tools));
   }
 
   // 4–8, 10: protocol, cost, connectors, drift, live reads
@@ -232,10 +264,11 @@ export async function doctor(argv: string[]) {
 
   const warned = checks.some(c => c.status === "warn");
   const otherFail = checks.some(c => c.status === "fail");
-  let exitCode = broken || !version ? EXIT.UNREACHABLE : blind.size ? EXIT.PARTIAL : otherFail ? 1 : warned && values.strict ? EXIT.PARTIAL : EXIT.OK;
+  const unreachable = broken || (!version && !direct);
+  let exitCode = unreachable ? EXIT.UNREACHABLE : blind.size ? EXIT.PARTIAL : otherFail ? 1 : warned && values.strict ? EXIT.PARTIAL : EXIT.OK;
   const result = {
-    claude: version ? `${version}${tested.includes(version) ? " (tested)" : ""}` : "missing",
-    bridge: broken || !version ? "broken" : `ok${readyMs ? ` (ready ${(readyMs / 1000).toFixed(1)}s, $0.0000, 0 tokens)` : ""}`,
+    claude: version ? `${version}${tested.includes(version) ? " (tested)" : ""}` : direct ? "not checked (transport direct)" : "missing",
+    bridge: direct ? "unused (transport direct)" : unreachable ? "broken" : `ok${readyMs ? ` (ready ${(readyMs / 1000).toFixed(1)}s, $0.0000, 0 tokens)` : ""}`,
     profile, checks, blind: [...blind], exit: exitCode, at: new Date().toISOString(),
   };
   const saveError = saveJson(doctorPath(), result);
