@@ -564,3 +564,25 @@ test("doctor under direct, a profile naming no connector: it checks the cached c
   expect(result.checks.find((c: { check: string }) => c.check === "direct:slack")).toMatchObject({ status: "fail", detail: expect.stringContaining("no connector ID cached") });
   expect(r.code).toBe(7);
 });
+
+describe("doctor under direct, what it can't read", () => {
+  test("a connector with no read to make is still checked for what direct calls need", async () => {
+    const path = join(root, "cache/manifests/slack.json"); // no ID: the check fails before reading the real login
+    const { server: _, ...m } = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify(m));
+    const r = await run(["doctor", "--as", "executor", "--out", "json"], { env: { PLUGBOARD_TRANSPORT: "direct" } }); // executor allows slack writes only
+    const result = JSON.parse(r.stdout);
+    expect(result.checks.find((c: { check: string }) => c.check === "direct:slack")).toMatchObject({ status: "fail", detail: expect.stringContaining("no connector ID cached") });
+    expect(r.code).toBe(7);
+  });
+
+  test("an empty cache is unreachable: no call can be made", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "pb-empty-cache-"));
+    try {
+      const r = await run(["doctor", "--out", "json"], { env: { PLUGBOARD_TRANSPORT: "direct", PLUGBOARD_CACHE: empty } });
+      const result = JSON.parse(r.stdout);
+      expect(result.checks.find((c: { check: string }) => c.check === "direct")).toMatchObject({ status: "fail", detail: expect.stringContaining("no connector is cached") });
+      expect(r.code).toBe(10);
+    } finally { rmSync(empty, { recursive: true, force: true }); }
+  });
+});

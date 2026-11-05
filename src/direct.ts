@@ -82,6 +82,9 @@ export class DirectSession {
     for (const m of needs) for (const t of m.tools) this.tools.set(t.sourceName, { id: typeof m.server?.id === "string" ? m.server.id : undefined, name: t.name, manifest: m });
   }
 
+  /** Why this session's calls can't go direct, or nothing when they can: what a call checks first, without a request. */
+  unusable(): string | undefined { return this.isDirect() ? undefined : this.notDirect; }
+
   private isDirect() {
     if (this.direct === undefined) {
       const missing = this.needs.find(m => typeof m.server?.id !== "string");

@@ -195,7 +195,7 @@ function reportError(error: unknown): number {
 /** An error as the CLI reports it. axi-sdk-js's own errors keep their code, with Plugboard's exit code for it where
  * Plugboard has one: they're converted here, at the CLI's edge, so the core never sees their type. */
 export function edgeError(error: unknown): { code: string; message: string; hints: string[]; exitCode: number } {
-  if (error instanceof AxiError) return { code: error.code, message: error.message, hints: error.suggestions ?? [], exitCode: EXIT[error.code as Code] ?? 1 };
+  if (error instanceof AxiError) return { code: error.code, message: error.message, hints: error.suggestions ?? [], exitCode: Object.hasOwn(EXIT, error.code) ? EXIT[error.code as Code] : 1 };
   return asPlugboardError(error);
 }
 
