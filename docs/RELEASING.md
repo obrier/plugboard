@@ -66,10 +66,22 @@ To build everything without publishing, run the workflow by hand: `gh workflow r
 
 `scripts/release.sh` does the same locally, into `release/<version>/`.
 
-## Landing page
+## Landing page and docs
 
-`site/index.html` is the landing page: one static file, no build step. `.github/workflows/pages.yml` deploys it to GitHub Pages on every change to `site/`, but only once the repository is public. To turn it on, go to Settings → Pages → Source and choose GitHub Actions. To preview it locally, run `python3 -m http.server 4173 --directory site`.
+One site on GitHub Pages, at https://obrier.github.io/plugboard/:
+- **The landing page** is `site/index.html`: one static file, no build step, at the root.
+- **The docs** are the Markdown in `docs/`, built with VitePress (`docs/package.json`, `docs/.vitepress/`), under `/docs/`. `RELEASING.md` and `design/` stay out of the site.
 
-## Before the first public release
+`.github/workflows/pages.yml` builds both and deploys them on every push to `main` that changes `site/` or `docs/`. A pull request that changes them builds the site without deploying it, so a dead link fails there. Pages deploys from GitHub Actions (Settings → Pages → Source).
 
-Homebrew downloads release assets without credentials, so `obrier/plugboard` must be public, or the archives must be attached to a release in a public repository. Until then, the workflow still publishes to the tap, but `brew install` can't download the archives, and the landing page doesn't deploy.
+To preview the docs locally:
+
+```bash
+cd docs && bun install && ./node_modules/.bin/vitepress dev .
+```
+
+The social card, `docs/public/og.png`, is rendered from `docs/.vitepress/og.html` at 1200×630.
+
+## The repository stays public
+
+Homebrew downloads release assets without credentials, so `obrier/plugboard` must be public, or the archives must be attached to a release in a public repository.
