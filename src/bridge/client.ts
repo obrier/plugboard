@@ -18,6 +18,8 @@ export type ConnectorServer = {
   scope?: string;
   transport?: string;
   error?: string;
+  /** How Claude Code reaches it, as `mcp_status` reports it: a claude.ai connector's is `{type: "claudeai-proxy", url, id}`. */
+  config?: Record<string, unknown>;
   tools: ToolMetadata[];
 };
 export type ConnectorTool = ToolMetadata & { serverName: string; toolName: string };
@@ -161,6 +163,7 @@ export class ClaudeConnectors {
         scope: typeof value.scope === "string" ? value.scope : undefined,
         transport: record(value.config) && typeof value.config.type === "string" ? value.config.type : undefined,
         error: typeof value.error === "string" ? value.error : undefined,
+        config: record(value.config) ? value.config : undefined,
         tools: Array.isArray(value.tools) ? value.tools.filter(tool => record(tool) && typeof tool.name === "string") as ToolMetadata[] : [],
       };
     });

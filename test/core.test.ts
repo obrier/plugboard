@@ -132,11 +132,13 @@ test("batch checks connections once for the whole batch, then each line through 
   const s = fakeSession();
   const lines = ["a", "b", "c", "d"].map(q => JSON.stringify({ connector: "slack", tool: "slack_search", args: { query: q } })).join("\n");
   const outs: { ok: boolean }[] = [];
+  const opened: string[][] = [];
   const code = await runBatch(lines, { profile: "default", concurrency: 2, perConnector: 2, ordered: true, budgetMs: 10_000 }, out => outs.push(out),
-    async () => ({ ...s.session, close: async () => {} }));
+    async needs => { opened.push(needs.map(m => m.id)); return { ...s.session, close: async () => {} }; });
   expect(code).toBe(0);
   expect(outs.map(o => o.ok)).toEqual([true, true, true, true]);
   expect(s.statusChecks()).toBe(1);
+  expect(opened).toEqual([["slack", "slack", "slack", "slack"]]); // the session is opened for the lines' connectors
 });
 
 describe("what is approved is what is sent", () => {
@@ -259,4 +261,18 @@ describe("claims that lose to a rival", () => {
     expect(keyState("k").state).toBe("unknown");
     expect(unresolvedKeys().map(e => e.key)).toEqual(["k"]);
   });
+});
+
+test("a direct write refused before sending, whose fallback can't start Claude Code, is recorded as not sent", async () => {
+  const { DirectSession } = await import("../src/direct");
+  const { fail } = await import("../src/errors");
+  const direct = { ...manifest, server: { type: "claudeai-proxy", id: "mcpsrv_01slack" } };
+  const refused = (async () => new Response("no", { status: 404 })) as unknown as typeof fetch;
+  const session = new DirectSession([direct], async () => { throw fail("BRIDGE_BROKEN", "Couldn't start Claude Code"); },
+    { login: () => ({ accessToken: "t", expiresAt: Date.now() + 3_600_000 }), fetch: refused });
+  const req = { profile: "executor", key: "nostart", expectHash: planCall(policy, "executor", send).hash, deadlineMs: 1_000 };
+  const error = await callWrite(async () => session, policy, send, req).catch(e => e);
+  expect(error.code).toBe("BRIDGE_BROKEN");
+  expect(readAudit().filter(e => e.key === "nostart").map(e => e.status)).toEqual(["attempt", "error"]);
+  expect(keyState("nostart").state).toBe("error"); // a new call can retry it; nothing to resolve by hand
 });

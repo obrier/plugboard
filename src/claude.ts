@@ -2,6 +2,8 @@ import { ClaudeConnectors } from "./bridge/client";
 import { childEnv } from "./bridge/capture";
 import { asAxiError, fail, isPermissionError } from "./errors";
 import { findClaude } from "./platform";
+import type { Manifest } from "./cache";
+import { DirectSession, directEnabled } from "./direct";
 import type { Policy } from "./policy";
 import { runtime } from "./runtime";
 
@@ -22,8 +24,15 @@ export function authStatus(path: string): { loggedIn: boolean; method?: string }
   try { const data = JSON.parse(out); return { loggedIn: data.loggedIn === true, method: data.authMethod }; } catch { return undefined; }
 }
 
-/** Connect, mapping spawn and protocol failures to BRIDGE_BROKEN. */
-export async function connect(policy: Policy) {
+/** A session for calling these connectors: direct to Anthropic's connector proxy when it can, Claude Code otherwise
+ * (`DirectSession`). With no connectors named (refresh, doctor), or PLUGBOARD_DIRECT=0, it's Claude Code's. */
+export async function connect(policy: Policy, needs: Manifest[] = []): Promise<Pick<ClaudeConnectors, "request" | "waitForServers" | "close">> {
+  if (needs.length && directEnabled()) return new DirectSession(needs, () => connectClaude(policy));
+  return connectClaude(policy);
+}
+
+/** Start Claude Code, mapping spawn and protocol failures to BRIDGE_BROKEN. */
+export async function connectClaude(policy: Policy) {
   const path = claudePath(policy);
   try {
     return await ClaudeConnectors.connect({ claudePath: path });

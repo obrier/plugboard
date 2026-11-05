@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import type { Manifest } from "./cache";
 import { encode } from "@toon-format/toon";
 import type { ClaudeConnectors } from "./bridge/client";
 import { connect, costGuard } from "./claude";
@@ -25,7 +26,7 @@ export type BatchOptions = { profile: string; concurrency: number; perConnector:
 export type Client = Pick<ClaudeConnectors, "request" | "waitForServers" | "close">;
 
 /** JSONL in → one result per line out, on one client. Reads only; each line fails on its own. */
-export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) => void, makeClient: () => Promise<Client>, backoffMs = [1000, 4000]): Promise<number> {
+export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) => void, makeClient: (needs: Manifest[]) => Promise<Client>, backoffMs = [1000, 4000]): Promise<number> {
   const policy = loadPolicy();
   const outputs: (Out | undefined)[] = [];
   let failed = 0;
@@ -63,7 +64,7 @@ export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) 
 
   const failAll = (list: Task[], failure: Failure) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { ...failure, retryable: false } }); };
   let client: Client;
-  try { client = await makeClient(); } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
+  try { client = await makeClient(tasks.map(t => t.p.manifest)); } catch (error) { failAll(tasks, { ...errorOf(error), code: "BRIDGE_BROKEN" }); return EXIT.BRIDGE_BROKEN; }
 
   let stopped: Failure | undefined; // a broken bridge, or a model reached: the rest of the batch fails with it
   try {
@@ -214,9 +215,9 @@ export async function batchCommand(argv: string[], axi = false): Promise<number>
     profile: profileName(values as Record<string, string>), concurrency, perConnector: policy.limits.perConnector,
     ordered: values.ordered === true || axi, budgetMs: parseDeadline(values.budget, 300_000),
   };
-  if (!axi) return runBatch(input, options, out => process.stdout.write(`${JSON.stringify(out)}\n`), () => connect(policy));
+  if (!axi) return runBatch(input, options, out => process.stdout.write(`${JSON.stringify(out)}\n`), needs => connect(policy, needs));
   const outs: Out[] = [];
-  const code = await runBatch(input, options, out => outs.push(out), () => connect(policy));
+  const code = await runBatch(input, options, out => outs.push(out), needs => connect(policy, needs));
   process.stdout.write(`${encode(axiSummary(outs, values.inline as string | undefined))}\n`);
   return code;
 }

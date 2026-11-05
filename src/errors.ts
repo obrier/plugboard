@@ -10,6 +10,11 @@ export const EXIT = {
 export type Code = keyof typeof EXIT;
 
 export const fail = (code: Code, message: string, help: string[] = []) => new AxiError(message, code, help);
+/** Errors a session raised knowing nothing was sent (a fallback that couldn't start Claude Code): a write records
+ * them as not sent, whatever their code, instead of an unknown outcome to resolve by hand. */
+const unsent = new WeakSet<object>();
+export const markNotSent = <E>(error: E): E => { if (typeof error === "object" && error !== null) unsent.add(error); return error; };
+export const wasNotSent = (error: unknown) => typeof error === "object" && error !== null && unsent.has(error);
 export const exitFor = (error: unknown) => (error instanceof AxiError ? EXIT[error.code as Code] ?? 1 : 1);
 
 // Matched against thrown control errors and isError text. Order matters: first hit wins.

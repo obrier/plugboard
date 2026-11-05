@@ -9,6 +9,8 @@ const dir = process.env.FAKE_DIR!;
 if (process.argv[2] === "--version") { console.log("9.9.9 (Claude Code)"); process.exit(0); }
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" })); process.exit(0); }
 const flag = (name: string) => existsSync(join(dir, name));
+// As mcp_status reports a claude.ai connector: through Anthropic's proxy, by its ID.
+const proxy = (url: string, id: string) => ({ type: "claudeai-proxy", url, id });
 const reply = (id: string, payload: object, error?: string) => process.stdout.write(JSON.stringify({ type: "control_response",
   response: { subtype: error ? "error" : "success", request_id: id, ...(error ? { error } : { response: payload }) } }) + "\n");
 const count = (name: string) => {
@@ -25,13 +27,13 @@ for await (const line of createInterface({ input: process.stdin })) {
   switch (request.subtype) {
     case "initialize": reply(id, {}); break;
     case "mcp_status": reply(id, { mcpServers: [
-      { name: "claude.ai Slack", status: "connected", tools: [
+      { name: "claude.ai Slack", status: "connected", config: proxy("https://mcp.slack.com/mcp", "mcpsrv_01slack"), tools: [
         { name: "slack_search_public", annotations: { readOnly: true } },
         { name: "slack_send_message" },
         { name: "slack_delete_message", annotations: { destructive: true } },
         { name: "slack_create_note" },
       ] },
-      { name: "claude.ai Gmail", status: flag("gmail-connected") ? "connected" : "needs-auth", tools: [] },
+      { name: "claude.ai Gmail", status: flag("gmail-connected") ? "connected" : "needs-auth", config: proxy("https://gmailmcp.googleapis.com/mcp/v1", "mcpsrv_01gmail"), tools: [] },
     ] }); break;
     case "mcp_call": {
       appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ tool: request.tool, args: request.arguments }) + "\n");

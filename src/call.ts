@@ -147,7 +147,7 @@ export async function runTool(connectorRef: string, args: string[]) {
 
   // The CLI's session: opened by the core once the call is allowed, closed here whatever happens.
   let client: Awaited<ReturnType<typeof connect>> | undefined;
-  const open: OpenSession = async () => (client = await connect(policy));
+  const open: OpenSession = async () => (client = await connect(policy, [manifest]));
   try {
     if (cls === "write") {
       const out = await callWrite(open, policy, request, { profile, key: key ?? "", expectHash: String(g["expect-hash"] ?? ""), deadlineMs: deadline });
