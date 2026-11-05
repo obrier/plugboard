@@ -84,22 +84,33 @@ describe("plan and write", () => {
     const plan = JSON.parse(JSON.stringify(pb.plan(NOTE)));
     expect(plan.request).toEqual({ connector: "slack", tool: "create-note", args: { text: "n" }, profile: "executor" });
     expect(plan.hash).toStartWith("sha256:");
-    const sent = await pb.write(plan, { key: "note-1" });
+    const sent = await pb.write(plan, { key: "note-1", profile: "executor" });
     expect(sent).toMatchObject({ sent: true, key: "note-1", via: "claude-code" });
     expect(calls()).toEqual([{ tool: "mcp__claude_ai_Slack__slack_create_note", args: { text: "n", idempotency_key: "note-1" } }]);
-    expect(await pb.write(plan, { key: "note-1" })).toMatchObject({ replayed: true, key: "note-1" });
+    expect(await pb.write(plan, { key: "note-1", profile: "executor" })).toMatchObject({ replayed: true, key: "note-1" });
     expect(calls()).toHaveLength(1);
   });
 
   test("a plan edited in transit is refused: write plans the request again and checks the hash", async () => {
     const plan = pb.plan(NOTE);
     const edited = { ...plan, request: { ...plan.request, args: { text: "WIRE ALL THE MONEY" } } };
-    expect((await pb.write(edited, { key: "note-2" }).catch(e => e)).code).toBe("POLICY_DENIED");
+    expect((await pb.write(edited, { key: "note-2", profile: "executor" }).catch(e => e)).code).toBe("POLICY_DENIED");
     expect(calls()).toHaveLength(0);
   });
 
+  test("the writer picks the profile, as the CLI's --as does: the plan's is never trusted", async () => {
+    const plan = pb.plan(NOTE); // planned under executor
+    expect((await pb.write(plan, { key: "note-3" }).catch(e => e)).code).toBe("POLICY_DENIED"); // the instance's profile: default, read only
+    const promoted = { ...plan, request: { ...plan.request, profile: "admin" } };
+    expect((await pb.write(promoted, { key: "note-3" }).catch(e => e)).code).toBe("POLICY_DENIED");
+    expect(calls()).toHaveLength(0);
+    expect(await pb.write(plan, { key: "note-3", profile: "executor" })).toMatchObject({ sent: true });
+    const executor = createPlugboard({ profile: "executor" });
+    try { expect(await executor.write(plan, { key: "note-4" })).toMatchObject({ sent: true }); } finally { await executor.close(); }
+  });
+
   test("a write needs a key", async () => {
-    expect((await pb.write(pb.plan(NOTE), { key: "" }).catch(e => e)).code).toBe("VALIDATION_ERROR");
+    expect((await pb.write(pb.plan(NOTE), { key: "", profile: "executor" }).catch(e => e)).code).toBe("VALIDATION_ERROR");
   });
 });
 

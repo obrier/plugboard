@@ -12,7 +12,7 @@
   "exports": {
     ".": {
       "types": "./dist/lib/index.d.ts",
-      "import": "./dist/lib/index.js"
+      "default": "./dist/lib/index.js"
     }
   },
   "types": "./dist/lib/index.d.ts",
@@ -30,7 +30,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "link": "sh scripts/link.sh",
-    "build:lib": "rm -rf dist/lib && bun build ./src/index.ts --target=node --format=esm --outfile=dist/lib/index.js && dts-bundle-generator --silent --no-check --project tsconfig.lib.json -o dist/lib/index.d.ts src/index.ts"
+    "build:lib": "rm -rf dist/lib && bun build ./src/index.ts --target=node --format=esm --outfile=dist/lib/index.js && dts-bundle-generator --silent --no-check --project tsconfig.lib.json -o dist/lib/index.d.ts src/index.ts && bun scripts/third-party-licenses.ts dist/lib/index.js dist/lib/THIRD-PARTY-LICENSES.txt"
   },
   "devDependencies": {
     "@toon-format/toon": "2.3.1",

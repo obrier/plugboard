@@ -294,7 +294,9 @@ test("write handshake: --plan on the args file, then the write with that hash; a
 test("a tool's own idempotency_key is filled from --write-key in the call, outside the hash: the approval names the content", async () => {
   const note = ["slack", "create-note", "--text", "n"];
   const plan = JSON.parse((await run([...note, "--write-key", "out-7", "--plan", "--out", "json"])).stdout);
-  expect(plan.payload).toEqual({ text: "n", idempotency_key: "out-7" });
+  // The plan shows what it approves: the key is filled at send time, whichever key that is.
+  expect(plan.payload).toEqual({ text: "n" });
+  expect(plan.keyFills).toBe("idempotency_key");
   expect(plan.hash).toBe(await planHash(note)); // planned without a key: the same approval
   expect((await run([...note, "--as", "executor", "--write", "--write-key", "out-7", "--expect-hash", plan.hash])).code).toBe(0);
   expect(calls()[0].args).toEqual({ text: "n", idempotency_key: "out-7" });

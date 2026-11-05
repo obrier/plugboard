@@ -28,6 +28,7 @@ try {
   writeFileSync(join(project, "package.json"), JSON.stringify({ name: "consumer", private: true, type: "module" }));
   run(["npm", "install", "--no-audit", "--no-fund", join(work, packed!.filename)], project);
   const installed = readdirSync(join(project, "node_modules")).filter(n => !n.startsWith("."));
+  check(paths.includes("dist/lib/THIRD-PARTY-LICENSES.txt"), "it carries the licenses of the dependencies bundled in it");
   check(installed.length === 1 && installed[0] === "@obrier", `installing it fetches nothing else (node_modules: ${installed.join(", ")})`);
 
   // Its types, from a consumer with Node's types only.
@@ -60,6 +61,9 @@ console.log(JSON.stringify({ via: r.via, users: r.value.matches.map(m => m.user)
   const ms = Date.now() - started;
   check(out.trim() === JSON.stringify({ via: "claude-code", users: ["jose", "ana"] }), `${run(["node", "--version"], project).trim()}: a read through the package, never closed, exits in ${ms} ms`);
   check(ms < 10_000, "without waiting for the idle close");
+  // require(esm), Node 22.12 and later: the export needs a "default" condition, not only "import".
+  writeFileSync(join(project, "require.cjs"), `const { createPlugboard } = require("@obrier/plugboard"); console.log(typeof createPlugboard);`);
+  check(run(["node", "require.cjs"], project, env).trim() === "function", "require() loads it too");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

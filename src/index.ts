@@ -31,7 +31,15 @@ export type Call = {
 export type Read = { value: unknown; raw: Record<string, unknown>; via: Via };
 /** What a write would send and whether the profile allows it, with the request it was planned from: plain JSON. */
 export type WritePlan = Plan & { request: { connector: string; tool: string; args: Record<string, unknown>; profile: string } };
-export type WriteOptions = { key: string; timeoutMs?: number; signal?: AbortSignal; transport?: Transport };
+export type WriteOptions = {
+  key: string;
+  /** The write profile it is sent under; the instance's by default. The plan's own profile is never trusted, as the
+   * CLI's --as is the sender's: no hash covers it. */
+  profile?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  transport?: Transport;
+};
 /** Sent now, or already sent under this key before (nothing was called). */
 export type Written =
   | { sent: true; key: string; ref: string | null; value: unknown; raw: Record<string, unknown>; via: Via }
@@ -82,8 +90,7 @@ export function createPlugboard(options: PlugboardOptions = {}): Plugboard {
           "Plan it with plan(), approve its hash, then send it with write(plan, { key })",
         ]);
       const req = { connector: request.connector, tool: request.tool, args: request.args };
-      const read = callRead(opener(transport), pol, profileOf(request.profile), req, request.timeoutMs ?? DEFAULT_TIMEOUT_MS, request.signal);
-      const { value, raw, via } = await dropWhenCancelled(read, request.signal);
+      const { value, raw, via } = await callRead(opener(transport), pol, profileOf(request.profile), req, request.timeoutMs ?? DEFAULT_TIMEOUT_MS, request.signal);
       return { value, raw, via };
     },
 
@@ -93,12 +100,12 @@ export function createPlugboard(options: PlugboardOptions = {}): Plugboard {
       return { ...planCall(loaded(), profile, req), request: { ...req, profile } };
     },
 
-    async write(plan, { key, timeoutMs, signal, transport }) {
+    async write(plan, { key, profile, timeoutMs, signal, transport }) {
       const r = plan?.request;
       if (!r || typeof r.connector !== "string" || typeof r.tool !== "string" || typeof plan.hash !== "string")
         throw fail("VALIDATION_ERROR", "Not a plan: write() takes what plan() returned", ["const p = plan(request); await write(p, { key })"]);
       const out = await callWrite(opener(transportOf(transport)), loaded(), { connector: r.connector, tool: r.tool, args: r.args },
-        { profile: profileOf(r.profile), key, expectHash: plan.hash, deadlineMs: timeoutMs ?? DEFAULT_TIMEOUT_MS, signal });
+        { profile: profileOf(profile), key, expectHash: plan.hash, deadlineMs: timeoutMs ?? DEFAULT_TIMEOUT_MS, signal });
       if (out.replayed) return { replayed: true, key: out.key, ref: out.ref, ...(out.at ? { at: out.at } : {}) };
       return { sent: true, key: out.key, ref: out.ref, value: out.value, raw: out.raw, via: out.via };
     },
@@ -109,17 +116,6 @@ export function createPlugboard(options: PlugboardOptions = {}): Plugboard {
       await Promise.all(open.map(session => session.close()));
     },
   };
-}
-
-/** A read cancelled is dropped at once, even while its session is still starting. */
-function dropWhenCancelled<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return work;
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(fail("TIMEOUT", "Read cancelled"));
-    if (signal.aborted) return onAbort();
-    signal.addEventListener("abort", onAbort, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }
 
 let shared: Plugboard | undefined;

@@ -49,6 +49,10 @@ export function refOf(value: unknown): string | undefined {
  * args itself, so what the policy judges, what was approved and what is sent are always the same call. */
 export type CallRequest = { connector: string; tool: string; args?: Record<string, unknown> };
 
+/** The tool's own idempotency_key, when the caller left it to the write key. */
+const keyFills = (tool: Prepared["tool"], args: Record<string, unknown> | undefined) =>
+  "idempotency_key" in (tool.inputSchema.properties ?? {}) && args?.idempotency_key === undefined ? "idempotency_key" as const : undefined;
+
 function mint(policy: Policy, req: CallRequest, key?: string): Prepared {
   const manifest = requireManifest(policy, req.connector);
   const tool = requireTool(manifest, req.tool);
@@ -58,7 +62,7 @@ function mint(policy: Policy, req: CallRequest, key?: string): Prepared {
   // A tool with its own idempotency_key gets the write key, so the service refuses a duplicate too. The key is
   // validated and sent, but stays out of the hash: the approval names the content, and the key is chosen at send
   // time (write(plan, { key })). One the caller wrote in the args is content, and hashed.
-  const keyed = key !== undefined && "idempotency_key" in (tool.inputSchema.properties ?? {}) && args.idempotency_key === undefined;
+  const keyed = key !== undefined && keyFills(tool, args) !== undefined;
   if (keyed) args.idempotency_key = key;
   const p = prepare(policy, manifest, tool, args, classify(policy, manifest.id, tool) === "write");
   if (!keyed) return p;
@@ -66,13 +70,22 @@ function mint(policy: Policy, req: CallRequest, key?: string): Prepared {
   return { ...p, hash: payloadHash(manifest.id, tool.name, content, tool.sourceName) };
 }
 
-export type Plan = { connector: string; tool: string; class: string; destructive: boolean; profile: string; decision: string; hash: string; payload: Record<string, unknown> };
+export type Plan = {
+  connector: string; tool: string; class: string; destructive: boolean; profile: string; decision: string; hash: string;
+  /** What the hash names: the args as sent, but for a parameter the write key fills (`keyFills`). */
+  payload: Record<string, unknown>;
+  /** A parameter the write key fills when the write is sent, whichever key that is: outside the payload and the hash. */
+  keyFills?: "idempotency_key";
+};
 /** What a call would send and whether the profile allows it; a write's hash is what its approval names. */
 export function planCall(policy: Policy, profile: string, req: CallRequest, key?: string): Plan {
   const p = mint(policy, req, key);
   let decision = "allowed";
   try { decide(policy, profile, p.manifest.id, p.tool, p.cls === "write"); } catch (error) { decision = `denied: ${(error as Error).message}`; }
-  return { connector: p.manifest.id, tool: p.tool.name, class: p.cls, destructive: p.tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload: p.args };
+  const fills = keyFills(p.tool, req.args);
+  const payload = { ...p.args };
+  if (fills) delete payload[fills];
+  return { connector: p.manifest.id, tool: p.tool.name, class: p.cls, destructive: p.tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload, ...(fills ? { keyFills: fills } : {}) };
 }
 
 /** `via`: the path that served the call, the connector proxy direct or Claude Code. */
@@ -83,8 +96,8 @@ export async function callRead(open: OpenSession, policy: Policy, profile: strin
   const p = mint(policy, req);
   decide(policy, profile, p.manifest.id, p.tool, false);
   stopIfCancelled(signal, "Read");
-  const session = await open(p.manifest);
-  requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
+  const session = await beforeSend(open(p.manifest), signal, "Read");
+  requireConnected(await beforeSend(session.waitForServers([p.manifest.connectorName]), signal, "Read"), p.manifest);
   const raw = await invoke(session, p, deadlineMs, signal);
   await costGuard(session);
   return { raw, value: unwrap(raw), via: viaOf(raw) };
@@ -103,6 +116,18 @@ export type WriteRequest = { profile: string; key: string; expectHash: string; d
 /** A call cancelled before it started: nothing was opened or sent. */
 function stopIfCancelled(signal: AbortSignal | undefined, what: string) {
   if (signal?.aborted) throw fail("TIMEOUT", `${what} cancelled before it started: nothing was sent`);
+}
+
+/** Waits for a step before the send (the session's start, its discovery), or stops at once when cancelled: nothing was
+ * sent, and the step finishes on its own for the session's next call. */
+function beforeSend<T>(step: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
+  if (!signal) return step;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(fail("TIMEOUT", `${what} cancelled before it was sent: nothing was sent`));
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    step.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 export type WriteResult =
   | { replayed: true; key: string; ref: string | null; at?: string }
@@ -136,8 +161,8 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   if (early) return early;
 
   stopIfCancelled(req.signal, `Write ${key}`);
-  const session = await open(p.manifest);
-  requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
+  const session = await beforeSend(open(p.manifest), req.signal, `Write ${key}`);
+  requireConnected(await beforeSend(session.waitForServers([p.manifest.connectorName]), req.signal, `Write ${key}`), p.manifest);
   stopIfCancelled(req.signal, `Write ${key}`); // still unclaimed: nothing to record
   // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
   let claim: ReturnType<typeof claimKey>;
