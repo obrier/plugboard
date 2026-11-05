@@ -18,7 +18,7 @@ jobs:
     permissions:
       contents: write # create the GitHub release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -37,14 +37,14 @@ jobs:
         run: bun run build:lib && npm pack --dry-run # never asks the registry, unlike npm publish --dry-run
 
       - name: Keep the library for the npm job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-library
           path: dist/lib/
 
       - name: "Dry run: keep the archives as a workflow artifact"
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: plugboard-release
           path: release/
@@ -84,16 +84,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
       - name: Trusted publishing needs npm 11.5.1 or later
         run: node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error(`npm ${process.argv[1]} is older than 11.5.1`); process.exit(1); }' "$(npm --version)"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: npm-library
           path: dist/lib/

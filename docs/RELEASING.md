@@ -35,7 +35,18 @@ Each publishing step skips what is already done (a release that exists, a formul
 
 Step 5 authenticates with the `TAP_DEPLOY_KEY` secret: a deploy key with write access to the tap repository only. To revoke it, delete the key in the tap repo under Settings → Deploy keys. To replace it, generate a new key pair, add the public key there with write access, and run `gh secret set TAP_DEPLOY_KEY --repo obrier/plugboard < key`.
 
-Step 6 stores no token. npm trusts the job through [trusted publishing](https://docs.npmjs.com/trusted-publishers): the package's settings on npmjs.com name `obrier/plugboard`, the workflow `release.yml` and the environment `npm`, and the job proves it is that workflow with a GitHub OIDC token. npm adds provenance itself. Only the `npm` job may ask for that token, and it installs and runs no dependency. npm only takes a trusted publisher for a package that exists, so a placeholder `0.0.0` was published by hand first, then deprecated.
+Step 6 stores no token. npm trusts the job through [trusted publishing](https://docs.npmjs.com/trusted-publishers): the package's settings on npmjs.com name `obrier/plugboard`, the workflow `release.yml` and the environment `npm`, and the job proves it is that workflow with a GitHub OIDC token. npm adds provenance itself. Only the `npm` job may ask for that token, and it installs and runs no dependency.
+
+It was set once, before the first release:
+
+```bash
+npm trust github @obrier/plugboard --file release.yml --repo obrier/plugboard --env npm --allow-publish
+```
+
+Without `--allow-publish`, npm allows only staged publishes, and the job's `npm publish` is refused.
+- **Before the first release:** npm took the trust for a package not yet published, and held the name with a `0.0.0-stage` version. A `0.0.0` placeholder was also published by hand.
+- **The first release:** 0.2.0 was published by the `npm` job.
+- Both placeholders are deprecated. npm asks for 2FA on `npm trust`, `npm deprecate` and a publish by hand, so run them in a terminal that can take it.
 
 Two repository settings guard it:
 - **The ruleset "Release tags":** only admins can create, move or delete `v*` tags.

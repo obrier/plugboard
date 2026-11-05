@@ -141,7 +141,7 @@ Chosen 2026-11-05, over regular npm dependencies and over shipping the CLI on np
 - `@obrier/plugboard` on npm is the library only: ESM, with TypeScript types. The CLI stays a Homebrew binary.
 - Its four runtime dependencies (`ajv`, `ajv-formats`, `chrono-node`, `smol-toml`) are bundled in, at the lockfile's versions: installing it fetches nothing else. The CLI's own (`@toon-format/toon`, `filtrex`, `axi-sdk-js`) stay out: with `PlugboardError`, the core no longer needs `axi-sdk-js`.
 - Node ≥ 22 (CI's oldest, the first with `Array.fromAsync`) and Bun ≥ 1.4.
-- One version for both: the `v*` tag that releases Homebrew also publishes to npm, with provenance. npm trusts the release workflow's `npm` job (trusted publishing, environment `npm`): no token is stored. Since npm only takes a trusted publisher for a package that exists, a placeholder `0.0.0` was published by hand first, then deprecated.
+- One version for both: the `v*` tag that releases Homebrew also publishes to npm, with provenance. npm trusts the release workflow's `npm` job (trusted publishing, environment `npm`): no token is stored. The trust was set before the first publish (`npm trust github … --allow-publish`), and 0.2.0, the first release, was published by that job (docs/RELEASING.md).
 
 ## Implementation, in order
 
