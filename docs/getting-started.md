@@ -59,4 +59,5 @@ Every tool parameter is a flag, generated from the tool's schema, and checked be
 ## Next
 
 - Shape what comes back with `--select`, `--where` and `--out`: see [Commands](reference/commands.md).
-- Call the same tools from code with [`@obrier/plugboard`](https://www.npmjs.com/package/@obrier/plugboard).
+- Give the tools to your agent: [Use it from any agent](harness-guides.md).
+- Call the same tools from code: [From code](guides/library.md).
