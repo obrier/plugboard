@@ -75,3 +75,18 @@ r.via;         // "direct" | "claude-code"
 - `value` is the result as the CLI prints it (`unwrap`: `structuredContent`, else the text blocks parsed as JSON, else `{ text }` or `{ content }`); `raw` is the MCP result as the connector sent it.
 - `via` names the path that served the call, so a script can see it fell back to Claude Code without running `doctor`.
 - It lines up with `write()`'s result, `{ sent, key, ref, value }` or `{ replayed, key, ref }`.
+
+## 4b. `PlugboardError`, and `BRIDGE_BROKEN` becomes `UNREACHABLE`
+
+Chosen 2026-11-05.
+
+```ts
+import { call, PlugboardError } from "@obrier/plugboard";
+try { await call(req); } catch (e) {
+  if (e instanceof PlugboardError && e.code === "AUTH_REQUIRED") console.log(e.hints);
+}
+```
+
+- The library throws its own `PlugboardError` (`code`, `message`, `hints`, `exitCode`), not `axi-sdk-js`'s `AxiError`: users don't import a dependency's type to catch ours.
+- The codes are the CLI's. `BRIDGE_BROKEN` is renamed `UNREACHABLE`: Plugboard couldn't reach your connectors by any path (the proxy refused, and Claude Code couldn't start, its protocol changed, or a sandbox blocked it). Exit code 10 is unchanged. The skill and the harness guides document the exit number, not the string; the rename ships with a release note, in the CLI and the library alike.
+- `COST_GUARD` keeps its name: a model was reached.
