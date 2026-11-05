@@ -7,6 +7,7 @@ import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
 import { payloadHash, prepare, requireManifest, requireTool, type Prepared } from "./prepare";
 import { costGuard } from "./claude";
+import { linkSignals } from "./signals";
 import { asPlugboardError, classify as classifyError, fail, PlugboardError, retryAfterMs, wasNotSent, type Code } from "./errors";
 import { errorText, unwrap } from "./unwrap";
 import { classify, decide, profileFor, type Policy } from "./policy";
@@ -304,11 +305,11 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
   const run = async (t: Task) => {
     const started = Date.now();
     t.attempts++;
+    const link = linkSignals([cancel.signal, stopRunning.signal, t.line.signal]); // let go once the line is done
     try {
       const { line } = t;
-      const lineSignal = AbortSignal.any([cancel.signal, stopRunning.signal, ...(line.signal ? [line.signal] : [])]);
       const read = await callRead(open(line), policy, line.profile ?? o.profile, { connector: line.connector, tool: line.tool, args: line.args },
-        line.timeoutMs ?? 30_000, lineSignal);
+        line.timeoutMs ?? 30_000, link.signal).finally(() => link.dispose());
       emit({ id: t.id, index: t.index, attempts: t.attempts, ms: Date.now() - started, ok: true, line, ...read });
     } catch (error) {
       if (cancel.signal.aborted) return; // left the loop: no one reads it
@@ -374,7 +375,8 @@ export async function* callBatch<L extends BatchLine, I = L>(open: (line: L) => 
   }
 }
 
+/** Waits ms, or until the signal aborts, whichever comes first; either way it stops listening. */
 const sleep = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
-  const timer = setTimeout(resolve, ms);
-  signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+  const { signal: done, dispose } = linkSignals([signal], ms);
+  done.addEventListener("abort", () => { dispose(); resolve(); }, { once: true });
 });

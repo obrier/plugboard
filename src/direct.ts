@@ -10,6 +10,7 @@ import type { Manifest } from "./cache";
 import { requireConnected } from "./connected";
 import { fail, markNotSent } from "./errors";
 import { runtime } from "./runtime";
+import { linkSignals } from "./signals";
 
 /** The one host the direct path talks to: Anthropic's MCP proxy for claude.ai connectors. It serves connector
  * tools only, so no request from here can reach a model; that is what keeps a direct session at $0. */
@@ -273,6 +274,11 @@ export class DirectSession {
   }
 
   private async call(tool: { id: string; name: string }, args: unknown, timeoutMs: number, cancel?: AbortSignal) {
+    const link = linkSignals([cancel], timeoutMs); // the request and its answer: let go once the call is done
+    try { return await this.send(tool, args, link.signal, cancel); } finally { link.dispose(); }
+  }
+
+  private async send(tool: { id: string; name: string }, args: unknown, signal: AbortSignal, cancel?: AbortSignal) {
     let res: Response;
     try {
       res = await this.deps.fetch(`${PROXY_ORIGIN}/v1/mcp/${tool.id}`, {
@@ -283,7 +289,7 @@ export class DirectSession {
           "X-Mcp-Client-Session-Id": this.clientSession, "User-Agent": `plugboard/${version}`,
         },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool.name, arguments: args ?? {} } }),
-        signal: cancel ? AbortSignal.any([AbortSignal.timeout(timeoutMs), cancel]) : AbortSignal.timeout(timeoutMs),
+        signal,
       });
     } catch (error) {
       // Plugboard's own words only: a fetch error can quote the request's headers, and so the login.

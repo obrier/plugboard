@@ -182,6 +182,43 @@ describe("callBatch: async iterables in and out", () => {
     expect(ordered[0]).toMatchObject({ ok: true, value: { q: "slow" }, via: "claude-code" });
   });
 
+  test("a long batch holds no abort listener for a line that is done, retried lines included", async () => {
+    // Every abort listener in place on a signal that hasn't aborted (an aborted one has dropped its once-listeners).
+    const live = new Map<EventTarget, Set<unknown>>();
+    const proto = EventTarget.prototype;
+    const [add, remove] = [proto.addEventListener, proto.removeEventListener];
+    proto.addEventListener = function (this: EventTarget, type: string, fn: any, o?: any) {
+      if (type === "abort" && this instanceof AbortSignal) live.set(this, (live.get(this) ?? new Set()).add(fn));
+      return add.call(this, type, fn, o);
+    } as typeof add;
+    proto.removeEventListener = function (this: EventTarget, type: string, fn: any, o?: any) {
+      if (type === "abort") live.get(this)?.delete(fn);
+      return remove.call(this, type, fn, o);
+    } as typeof remove;
+    const held = () => [...live].reduce((n, [s, fns]) => n + ((s as AbortSignal).aborted ? 0 : fns.size), 0);
+    try {
+      const tried = new Set<string>();
+      const session: Session = {
+        waitForServers: async () => [{ name: "claude.ai Slack", status: "connected", tools: [] }],
+        request: async (request: any) => {
+          if (request.subtype === "get_session_cost") return { text: "Total cost: $0.0000\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" } as any;
+          const q = String(request.arguments.query);
+          if (!tried.has(q)) { tried.add(q); throw fail("RATE_LIMITED", "429 Too Many Requests"); } // each line is rate limited once
+          return { structuredContent: { q } } as any;
+        },
+      };
+      const caller = new AbortController(); // the program's signal, on every line
+      const lines = Array.from({ length: 30 }, (_, i) => ({ ...line(`q${i}`), signal: caller.signal }));
+      let done = 0, most = 0;
+      for await (const r of callBatch(() => async () => session, policy, lines, { ...settings, backoffMs: [1, 1] })) {
+        expect(r.ok).toBe(true);
+        if (++done > 5) most = Math.max(most, held());
+      }
+      expect(done).toBe(30);
+      expect(most).toBeLessThanOrEqual(settings.concurrency * 3); // at most the running lines' own: never one per line done
+    } finally { [proto.addEventListener, proto.removeEventListener] = [add, remove]; }
+  });
+
   test("breaking out of the loop cancels the lines still running and closes the producer", async () => {
     const s = scripted();
     let closed = false;
