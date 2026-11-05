@@ -54,94 +54,172 @@ export function readLogin(): Login | undefined {
   } catch { return undefined; }
 }
 
-/** The request was refused before the tool ran: safe to make again through Claude Code. */
-class Refused extends Error {}
+/** The request was refused before the tool ran: safe to make again through Claude Code. `status` is the HTTP
+ * refusal's, none for a connection that never opened. */
+class Refused extends Error { constructor(message: string, readonly status?: number) { super(message); } }
 // Connection errors that mean nothing was sent: Bun's and Node's codes for a refused connection and a failed DNS
 // lookup (observed on Bun 1.4 and Node 22 and 26). A reset or close can come after the request left: not here.
 const NOT_SENT = new Set(["ConnectionRefused", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
 /** The request left and no full answer came back: the tool may have run. TIMEOUT, which a write records as unknown. */
 const mayHaveRun = (what: string) => fail("TIMEOUT", `Timed out waiting for mcp_call: ${what}; the connector may have run it`);
+/** A login this close to expiring is read again before a call: Claude Code may have renewed it. */
+const REREAD_MS = 5 * 60_000;
+/** A login this close to expiring isn't used: the call goes through Claude Code, which renews it. */
+const EXPIRING_MS = 60_000;
 
-/** A session that calls connectors direct, and starts Claude Code only when it has to: no usable login, a login
- * expiring within a minute, a connector without a cached ID, or a request the proxy refused before the tool ran
- * (HTTP 400, 401, 403, 404, or no connection). After a send nothing falls back: a timeout, a 5xx or a 429 is
- * reported as it is, so a write is never sent twice. Once fallen back, the rest of the session is Claude Code's.
+/** A session that calls connectors direct, and goes through Claude Code only for a call it has to: a connector
+ * without a cached ID, no usable login (none, expiring within a minute, without connector access, or one the proxy
+ * refused), or a request the proxy refused before the tool ran (HTTP 400, 401, 403, 404, or no connection). After a
+ * send nothing falls back: a timeout, a 5xx or a 429 is reported as it is, so a write is never sent twice.
+ *
+ * It lasts as long as its user wants: connectors are taken on as they're first called (`use`), each call decides
+ * again (a login near expiry is read again first), and a connector the proxy refused stays with Claude Code. Claude
+ * Code, once started, closes itself after `idleMs` without a call and starts again when one needs it.
  * With `fallback: false` (transport "direct") it never starts Claude Code: what would fall back is UNREACHABLE. */
 export class DirectSession {
-  private login?: Login;
+  private login?: Login; // the login last read
+  private refusedToken?: string; // a login the proxy answered 401 to: not sent again
+  private readonly refused = new Map<string, string>(); // connector id → why the proxy refused it (400, 403, 404)
+  private readonly manifests: Manifest[] = [];
   private readonly tools = new Map<string, { id?: string; name: string; manifest: Manifest }>();
-  private direct?: boolean; // decided on first use: the login is read only by a session that is used
-  /** Why calls go through Claude Code, once they do (doctor reports it). */
+  /** Why the last call went through Claude Code (doctor reports it); nothing once a call goes direct. */
   notDirect?: string;
   private claude?: Promise<Client>;
-  private discovered: ConnectorServer[] = []; // Claude Code's list once it started, for the same check as without the direct path
+  private discovered: ConnectorServer[] = []; // Claude Code's last list, for the same check as without the direct path
+  private readonly discoveredNames = new Set<string>();
+  private busy = 0; // calls using Claude Code right now
+  private idle?: ReturnType<typeof setTimeout>;
   private readonly clientSession = crypto.randomUUID();
 
-  constructor(private readonly needs: Manifest[], private readonly openClaude: () => Promise<Client>, private readonly deps: DirectDeps = { login: readLogin, fetch },
-    private readonly options: { fallback?: boolean } = {}) {
-    for (const m of needs) for (const t of m.tools) this.tools.set(t.sourceName, { id: typeof m.server?.id === "string" ? m.server.id : undefined, name: t.name, manifest: m });
+  constructor(needs: Manifest[], private readonly openClaude: () => Promise<Client>, private readonly deps: DirectDeps = { login: readLogin, fetch },
+    private readonly options: { fallback?: boolean; idleMs?: number } = {}) {
+    this.use(needs);
   }
 
-  /** Why this session's calls can't go direct, or nothing when they can: what a call checks first, without a request. */
-  unusable(): string | undefined { return this.isDirect() ? undefined : this.notDirect; }
-
-  private isDirect() {
-    if (this.direct === undefined) {
-      const missing = this.needs.find(m => typeof m.server?.id !== "string");
-      const login = missing ? undefined : this.deps.login();
-      this.notDirect = missing ? `${missing.connectorName} has no connector ID cached (run \`plugboard refresh\`)`
-        : !login ? "no claude.ai login found"
-        : login.expiresAt !== undefined && login.expiresAt - Date.now() <= 60_000 ? "the claude.ai login expires within a minute"
-        : login.scopes !== undefined && !login.scopes.includes("user:mcp_servers") ? "the claude.ai login has no connector access (user:mcp_servers)"
-        : undefined;
-      this.direct = this.notDirect === undefined;
-      if (this.direct) this.login = login;
+  /** Takes these connectors on; one already taken on is no change. */
+  use(manifests: Manifest[]) {
+    for (const m of manifests) {
+      if (this.manifests.some(known => known.id === m.id)) continue;
+      this.manifests.push(m);
+      for (const t of m.tools) this.tools.set(t.sourceName, { id: typeof m.server?.id === "string" ? m.server.id : undefined, name: t.name, manifest: m });
     }
-    return this.direct;
   }
 
-  /** Claude Code, started once, with the session's connectors discovered: a call right after a start would find them pending. */
-  private fallback(reason?: string): Promise<Client> {
-    if (this.direct) this.notDirect = reason;
-    this.direct = false;
-    if (this.options.fallback === false) return Promise.reject(markNotSent(fail("UNREACHABLE",
-      `The transport is "direct" and ${this.notDirect ?? "the connector proxy can't serve this call"}`,
+  /** Why calls to these connectors (all taken on, by default) can't go direct now, or nothing when they can:
+   * what a call checks first, without a request. */
+  unusable(manifests = this.manifests): string | undefined {
+    for (const m of manifests) { const why = this.connectorProblem(m); if (why) return why; }
+    return this.loginProblem();
+  }
+
+  private connectorProblem(m: Manifest) {
+    if (typeof m.server?.id !== "string") return `${m.connectorName} has no connector ID cached (run \`plugboard refresh\`)`;
+    return this.refused.get(m.id);
+  }
+
+  /** The login, read again when there's none yet, it's near expiry, or the proxy refused it. */
+  private loginProblem(): string | undefined {
+    const stale = !this.login || this.login.accessToken === this.refusedToken
+      || (this.login.expiresAt !== undefined && this.login.expiresAt - Date.now() <= REREAD_MS);
+    if (stale) this.login = this.deps.login();
+    const login = this.login;
+    return !login ? "no claude.ai login found"
+      : login.accessToken === this.refusedToken ? "the connector proxy refused the claude.ai login (401)"
+      : login.expiresAt !== undefined && login.expiresAt - Date.now() <= EXPIRING_MS ? "the claude.ai login expires within a minute"
+      : login.scopes !== undefined && !login.scopes.includes("user:mcp_servers") ? "the claude.ai login has no connector access (user:mcp_servers)"
+      : undefined;
+  }
+
+  /** Claude Code, started once and kept while used; a start that failed is tried again by the next call. */
+  private client(): Promise<Client> {
+    if (this.idle) { clearTimeout(this.idle); this.idle = undefined; }
+    return this.claude ??= this.openClaude().catch(error => { this.claude = undefined; throw error; });
+  }
+
+  /** A call through Claude Code, for this reason: refused under the transport direct. */
+  private fallback(reason: string): Promise<Client> {
+    this.notDirect = reason;
+    if (this.options.fallback === false) return Promise.reject(markNotSent(fail("UNREACHABLE", `The transport is "direct" and ${reason}`,
       ["Set the transport to auto to let Claude Code make the call", "Run `plugboard doctor` for details"])));
-    return (this.claude ??= this.openClaude().then(async client => {
-      this.discovered = await client.waitForServers([...new Set(this.needs.map(m => m.connectorName))]);
-      return client;
-    }));
+    return this.client();
+  }
+
+  /** Waits for these connectors' discovery in Claude Code, once each: a call right after a start would find them pending. */
+  private async discover(client: Client, names: string[]) {
+    const missing = names.filter(name => !this.discoveredNames.has(name));
+    if (!missing.length) return;
+    this.discovered = await client.waitForServers(missing);
+    for (const name of missing) this.discoveredNames.add(name);
+  }
+
+  /** Runs work that uses Claude Code; once none does, Claude Code closes after `idleMs`. */
+  private async using<T>(work: () => Promise<T>): Promise<T> {
+    this.busy++;
+    try { return await work(); } finally {
+      if (--this.busy === 0 && this.claude) {
+        this.idle = setTimeout(() => void this.shut(), this.options.idleMs ?? 30_000);
+        this.idle.unref?.(); // the timer never keeps a program from exiting
+      }
+    }
+  }
+
+  private async shut() {
+    this.idle = undefined;
+    const claude = this.claude;
+    this.claude = undefined;
+    this.discovered = [];
+    this.discoveredNames.clear();
+    await (await claude?.catch(() => undefined))?.close();
   }
 
   async waitForServers(names?: string[]): Promise<ConnectorServer[]> {
-    if (!this.isDirect()) return (await this.fallback()).waitForServers(names);
+    const needs = names ? this.manifests.filter(m => names.includes(m.connectorName)) : this.manifests;
+    const why = this.unusable(needs);
+    if (why) return this.using(async () => {
+      const client = await this.fallback(why);
+      await this.discover(client, names ?? needs.map(m => m.connectorName));
+      return this.discovered;
+    });
     // The proxy has no status call: a connector that is no longer connected refuses the call, which falls back.
-    return this.needs.map(m => ({ name: m.connectorName, status: "connected", config: m.server, tools: m.tools.map(t => ({ name: t.name })) }));
+    return needs.map(m => ({ name: m.connectorName, status: "connected", config: m.server, tools: m.tools.map(t => ({ name: t.name })) }));
   }
 
   async request<T = Record<string, unknown>>(request: ControlRequest, options: { timeoutMs?: number } = {}): Promise<T> {
     if (request.subtype === "mcp_call") {
       const tool = this.tools.get(String(request.tool));
-      let refused: string | undefined;
-      if (this.isDirect() && tool?.id) {
+      let why = tool ? this.unusable([tool.manifest]) : `${String(request.tool)} isn't a tool of this session's connectors`;
+      if (!why && tool?.id) {
+        this.notDirect = undefined;
+        const token = this.login!.accessToken;
         try { return await this.call({ id: tool.id, name: tool.name }, request.arguments, options.timeoutMs ?? 35_000) as T; } catch (error) {
           if (!(error instanceof Refused)) throw error;
-          refused = error.message;
+          why = error.message;
+          if (error.status === 401) this.refusedToken = token;
+          else if (error.status) this.refused.set(tool.manifest.id, error.message);
         }
       }
-      // This call hasn't been sent anywhere yet: a Claude Code that can't start says so.
-      const client = await this.fallback(refused).catch(error => { throw markNotSent(error); });
-      // As without the direct path: a connector Claude Code doesn't list as connected is refused before the call.
-      if (tool) requireConnected(this.discovered, tool.manifest);
-      return client.request<T>(request, options);
+      return this.using(async () => {
+        let client: Client;
+        try { // this call hasn't been sent anywhere yet: a Claude Code that can't start, or can't list it, says so
+          client = await this.fallback(why!);
+          if (tool) await this.discover(client, [tool.manifest.connectorName]);
+        } catch (error) { throw markNotSent(error); }
+        // As without the direct path: a connector Claude Code doesn't list as connected is refused before the call.
+        if (tool) requireConnected(this.discovered, tool.manifest);
+        return client.request<T>(request, options);
+      });
     }
-    // Nothing but the proxy was reached while Claude Code never started: the session's cost is zero by construction.
+    // Nothing but the proxy was reached while Claude Code isn't running: the session's cost is zero by construction.
+    // Each call's cost is checked right after it, so a Claude Code closed when idle was checked before it closed.
     if (request.subtype === "get_session_cost" && !this.claude)
       return { text: "Total cost: $0.0000 (connector proxy only)\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" } as T;
-    return (await this.fallback()).request<T>(request, options);
+    return this.using(async () => (await this.client()).request<T>(request, options));
   }
 
-  async close() { if (this.claude) await (await this.claude.catch(() => undefined))?.close(); }
+  async close() {
+    if (this.idle) { clearTimeout(this.idle); this.idle = undefined; }
+    await this.shut();
+  }
 
   private async call(tool: { id: string; name: string }, args: unknown, timeoutMs: number) {
     let res: Response;
@@ -164,7 +242,7 @@ export class DirectSession {
       if (e.name === "TimeoutError" || e.name === "AbortError") throw mayHaveRun("no answer in time");
       throw mayHaveRun(`the connection to the connector proxy failed (${code ?? e.name})`);
     }
-    if ([400, 401, 403, 404].includes(res.status)) { await res.body?.cancel().catch(() => {}); throw new Refused(`the connector proxy refused the call (${res.status})`); }
+    if ([400, 401, 403, 404].includes(res.status)) { await res.body?.cancel().catch(() => {}); throw new Refused(`the connector proxy refused the call (${res.status})`, res.status); }
     let text: string;
     try { text = await res.text(); } catch (error) {
       const e = error as Error & { code?: string; cause?: { code?: string } };

@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // Local protocol fixture: no authentication or real tools; schema requests use loopback only.
 import { createInterface } from "node:readline";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+writeFileSync("pid", String(process.pid)); // in its working folder: a test checks it was stopped
 let statusCalls = 0;
 const ids = new Set<string>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();

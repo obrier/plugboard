@@ -91,6 +91,10 @@ export class ClaudeConnectors {
     private readonly schemaOptions: { claudePath: string; cwd: string; timeoutMs: number; discoveryTimeoutMs: number; runtime: Runtime },
     private readonly ownedDirectory?: string,
   ) {
+    // Claude Code never keeps a program from exiting: a request waiting for its answer keeps it running through its
+    // timeout timer, and Claude Code is stopped when the program exits.
+    proc.unref();
+    process.once("exit", this.stopOnExit);
     this.reading = this.readStdout();
     this.draining = (async () => {
       // Do not print or retain diagnostic output that could contain credentials.
@@ -242,7 +246,10 @@ export class ClaudeConnectors {
     return this.closing ??= this.shutdown();
   }
 
+  private readonly stopOnExit = () => { if (this.proc.exitCode === null) this.proc.kill("SIGTERM"); };
+
   private async shutdown() {
+    process.removeListener("exit", this.stopOnExit);
     this.fail(new Error("Claude connector client is closed"));
     if (this.proc.exitCode === null) this.proc.kill("SIGTERM");
     const forceKill = setTimeout(() => this.proc.kill("SIGKILL"), 5_000);

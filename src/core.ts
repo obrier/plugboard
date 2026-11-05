@@ -13,9 +13,10 @@ import { classify, decide, profileFor, type Policy } from "./policy";
 
 import { BIN, requireConnected } from "./connected";
 export { BIN, requireConnected };
-/** What the core needs of a Claude Code session; opened only once a call is allowed. */
+/** What the core needs of a session; opened only once a call is allowed, for the connector the call names (a shared
+ * session takes it on then). */
 export type Session = Pick<ClaudeConnectors, "request" | "waitForServers">;
-export type OpenSession = () => Promise<Session>;
+export type OpenSession = (manifest: Manifest) => Promise<Session>;
 
 export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepared, deadlineMs: number) {
   let result: Record<string, any>;
@@ -75,7 +76,7 @@ export type ReadResult = { raw: Record<string, any>; value: unknown; via: Via };
 export async function callRead(open: OpenSession, policy: Policy, profile: string, req: CallRequest, deadlineMs: number): Promise<ReadResult> {
   const p = mint(policy, req);
   decide(policy, profile, p.manifest.id, p.tool, false);
-  const session = await open();
+  const session = await open(p.manifest);
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
   const raw = await invoke(session, p, deadlineMs);
   await costGuard(session);
@@ -122,7 +123,7 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const early = replayOrRefuse(keyState(key, seen)); // no session for a key already sent or unresolved
   if (early) return early;
 
-  const session = await open();
+  const session = await open(p.manifest);
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
   // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
   let claim: ReturnType<typeof claimKey>;

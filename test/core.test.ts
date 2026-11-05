@@ -276,3 +276,10 @@ test("a direct write refused before sending, whose fallback can't start Claude C
   expect(readAudit().filter(e => e.key === "nostart").map(e => e.status)).toEqual(["attempt", "error"]);
   expect(keyState("nostart").state).toBe("error"); // a new call can retry it; nothing to resolve by hand
 });
+
+test("a session is opened for the connector the call names: a shared session takes it on then", async () => {
+  const s = fakeSession();
+  const opened: string[] = [];
+  await callRead(async m => { opened.push(m.id); return s.session; }, policy, "default", search, 1_000);
+  expect(opened).toEqual(["slack"]);
+});
