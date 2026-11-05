@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { AxiError } from "axi-sdk-js";
 import { keyState } from "../src/audit";
 import { mergeCapture, shortName, findTool, type Manifest } from "../src/cache";
 import { applyTransforms, canonical, payloadHash, timeParams } from "../src/call";
 import { refOf } from "../src/core";
-import { asAxiError, classify as classifyError } from "../src/errors";
+import { asPlugboardError, classify as classifyError, PlugboardError } from "../src/errors";
 import { cacheDir, collapseHome } from "../src/platform";
 import { DiscoveryTimeoutError } from "../src/bridge/client";
 import { mergeArgs, parseFlags, toolHelp } from "../src/flags";
@@ -36,7 +35,7 @@ const schema = {
     mode: { type: "string" },
   },
 };
-const code = (fn: () => unknown) => { try { fn(); } catch (e) { return (e as AxiError).code; } return "none"; };
+const code = (fn: () => unknown) => { try { fn(); } catch (e) { return (e as PlugboardError).code; } return "none"; };
 
 describe("schema → flags", () => {
   test("scalars, enums, booleans, negation, repeatables, camelCase and inline values", () => {
@@ -126,6 +125,8 @@ describe("policy", () => {
     expect(code(() => decide(policy, "default", "datadog", t("anything"), true))).toBe("POLICY_DENIED");
     expect(code(() => parsePolicy("[profiles.x]\nmode = 'admin'", "p"))).toBe("VALIDATION_ERROR");
     expect(code(() => parsePolicy("[profiles.x]\nallow = ['nocolon']", "p"))).toBe("VALIDATION_ERROR");
+    expect(code(() => parsePolicy("transport = 'fast'", "p"))).toBe("VALIDATION_ERROR");
+    expect(parsePolicy("transport = 'direct'", "p").transport).toBe("direct");
     expect(code(() => parsePolicy("[transforms]\n'a:b.c' = 'weekday'", "p"))).toBe("VALIDATION_ERROR");
   });
 });
@@ -134,14 +135,14 @@ describe("doctor probe", () => {
   const tools = [{ name: "a" }, { name: "b" }];
   test("moves to the next tool only when the connector rejects the call", async () => {
     const tried: string[] = [];
-    const result = await probe(tools, async t => { tried.push(t.name); if (t.name === "a") throw new AxiError("bad args", "UPSTREAM_ERROR", []); });
+    const result = await probe(tools, async t => { tried.push(t.name); if (t.name === "a") throw new PlugboardError("bad args", "UPSTREAM_ERROR", []); });
     expect(tried).toEqual(["a", "b"]);
     expect(result.tool?.name).toBe("b");
   });
   test("stops at a timeout or auth failure: the connector is down", async () => {
-    for (const code of ["TIMEOUT", "AUTH_REQUIRED", "RATE_LIMITED"]) {
+    for (const code of ["TIMEOUT", "AUTH_REQUIRED", "RATE_LIMITED"] as const) {
       const tried: string[] = [];
-      const result = await probe(tools, async t => { tried.push(t.name); throw new AxiError("down", code, []); });
+      const result = await probe(tools, async t => { tried.push(t.name); throw new PlugboardError("down", code, []); });
       expect(tried).toEqual(["a"]);
       expect(result.error).toContain("a: down");
     }
@@ -172,17 +173,17 @@ describe("transforms", () => {
   });
 
   test("a bad transforms.toml stops the command with an error naming that file, not the policy", () => {
-    const errorOf = (fn: () => unknown) => { try { fn(); } catch (e) { return e as AxiError; } throw new Error("no error"); };
+    const errorOf = (fn: () => unknown) => { try { fn(); } catch (e) { return e as PlugboardError; } throw new Error("no error"); };
     for (const text of ["[transforms]\n'a:b.c' = 'weekday'", "[transforms]\n'a:b.c' = \n"]) {
       const e = errorOf(() => parsePolicy("", "/c/policy.toml", { text, path: "/c/transforms.toml" }));
       expect(e.code).toBe("VALIDATION_ERROR");
       expect(e.message.startsWith("/c/transforms.toml: ")).toBe(true);
       expect(e.message).not.toContain("policy");
-      expect(e.suggestions.join(" ")).toContain("Fix or remove the bad line in /c/transforms.toml");
+      expect(e.hints.join(" ")).toContain("Fix or remove the bad line in /c/transforms.toml");
     }
     const policyError = errorOf(() => parsePolicy("[profiles.x]\nmode = 'admin'", "/c/policy.toml"));
     expect(policyError.message.startsWith("/c/policy.toml: ")).toBe(true);
-    expect(policyError.suggestions).toEqual(["Edit /c/policy.toml"]);
+    expect(policyError.hints).toEqual(["Edit /c/policy.toml"]);
     // transforms must be a table, in either file
     expect(errorOf(() => parsePolicy("", "/c/policy.toml", { text: "transforms = 'unix'", path: "/c/transforms.toml" })).message).toBe("/c/transforms.toml: transforms must be a table of \"connector:tool.param\" = \"format\"");
     expect(errorOf(() => parsePolicy("transforms = 5", "/c/policy.toml")).message.startsWith("/c/policy.toml: transforms must be a table")).toBe(true);
@@ -283,25 +284,25 @@ describe("output", () => {
 
 describe("errors, time, cache", () => {
   test("a blocked sandbox reads as what it is, not a broken bridge or an unknown error", () => {
-    const none = asAxiError(new DiscoveryTimeoutError([]));
-    expect(none.code).toBe("BRIDGE_BROKEN");
+    const none = asPlugboardError(new DiscoveryTimeoutError([]));
+    expect(none.code).toBe("UNREACHABLE");
     expect(none.message).toContain("listed no connectors");
-    expect(none.suggestions.join(" ")).toContain("sandbox");
-    const pending = asAxiError(new DiscoveryTimeoutError([{ name: "claude.ai Slack", status: "pending", tools: [] }]));
+    expect(none.hints.join(" ")).toContain("sandbox");
+    const pending = asPlugboardError(new DiscoveryTimeoutError([{ name: "claude.ai Slack", status: "pending", tools: [] }]));
     expect(pending.message).toContain("claude.ai Slack");
-    const perm = asAxiError(Object.assign(new Error("EPERM: operation not permitted, open '/x/doctor.json'"), { code: "EPERM" }));
-    expect(perm.suggestions.join(" ")).toContain("sandbox");
-    expect(asAxiError(new Error("boom")).code).toBe("UNKNOWN");
-    expect(asAxiError(new Error("boom"), "UPSTREAM_ERROR").code).toBe("UPSTREAM_ERROR");
-    expect(asAxiError(new Error("Claude Code closed stdout")).code).toBe("BRIDGE_BROKEN"); // the classify table still applies
+    const perm = asPlugboardError(Object.assign(new Error("EPERM: operation not permitted, open '/x/doctor.json'"), { code: "EPERM" }));
+    expect(perm.hints.join(" ")).toContain("sandbox");
+    expect(asPlugboardError(new Error("boom")).code).toBe("UNKNOWN");
+    expect(asPlugboardError(new Error("boom"), "UPSTREAM_ERROR").code).toBe("UPSTREAM_ERROR");
+    expect(asPlugboardError(new Error("Claude Code closed stdout")).code).toBe("UNREACHABLE"); // the classify table still applies
     // A local file error is never read as the connector table: its path or wording can look like an auth or rate limit
     const sys = (message: string, code: string) => Object.assign(new Error(message), { code, syscall: "open" });
-    expect(asAxiError(sys("EDQUOT: disk quota exceeded, write", "EDQUOT")).code).toBe("UNKNOWN");
-    expect(asAxiError(sys("ENOENT: no such file or directory, open '/srv/403/policy.toml'", "ENOENT")).code).toBe("UNKNOWN");
-    const upstream = new AxiError("Slack: permission denied for channel", "UPSTREAM_ERROR");
-    expect(asAxiError(upstream)).toBe(upstream); // a connector's own text never gets the sandbox hint
-    expect(perm.suggestions.join(" ")).toContain("harness-guides.md#sandboxes"); // a link that works without the repo
-    expect(perm.suggestions.join(" ")).toContain(collapseHome(cacheDir())); // refresh and a first call write the cache
+    expect(asPlugboardError(sys("EDQUOT: disk quota exceeded, write", "EDQUOT")).code).toBe("UNKNOWN");
+    expect(asPlugboardError(sys("ENOENT: no such file or directory, open '/srv/403/policy.toml'", "ENOENT")).code).toBe("UNKNOWN");
+    const upstream = new PlugboardError("Slack: permission denied for channel", "UPSTREAM_ERROR");
+    expect(asPlugboardError(upstream)).toBe(upstream); // a connector's own text never gets the sandbox hint
+    expect(perm.hints.join(" ")).toContain("harness-guides.md#sandboxes"); // a link that works without the repo
+    expect(perm.hints.join(" ")).toContain(collapseHome(cacheDir())); // refresh and a first call write the cache
   });
   test("error classification table", () => {
     expect(classifyError("invalid_auth")).toBe("AUTH_REQUIRED");
@@ -309,7 +310,7 @@ describe("errors, time, cache", () => {
     expect(classifyError("HTTP 429 Too Many Requests")).toBe("RATE_LIMITED");
     expect(classifyError("ratelimited, retry after 3")).toBe("RATE_LIMITED");
     expect(classifyError("Timed out waiting for mcp_call")).toBe("TIMEOUT");
-    expect(classifyError("Claude Code closed stdout")).toBe("BRIDGE_BROKEN");
+    expect(classifyError("Claude Code closed stdout")).toBe("UNREACHABLE");
     expect(classifyError("'id' required")).toBe("UPSTREAM_ERROR");
   });
   test("time parsing and formats", () => {
@@ -442,4 +443,21 @@ test("writeJson: its temp file is its own, so another writer's never blocks or c
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ a: 1 });
     expect(readdirSync(dir).sort()).toEqual(["x.json", "x.json.tmp"]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+describe("PlugboardError", () => {
+  test("is plugboard's own error: code, message, hints and exit code, with no dependency's type", async () => {
+    const { PlugboardError, fail, asPlugboardError } = await import("../src/errors");
+    const e = fail("AUTH_REQUIRED", "claude.ai Slack is needs-auth", ["Reconnect it"]);
+    expect(e).toBeInstanceOf(PlugboardError);
+    expect(e).toBeInstanceOf(Error);
+    expect({ code: e.code, message: e.message, hints: e.hints, exitCode: e.exitCode }).toEqual({ code: "AUTH_REQUIRED", message: "claude.ai Slack is needs-auth", hints: ["Reconnect it"], exitCode: 4 });
+    expect(asPlugboardError(e)).toBe(e);
+    expect(asPlugboardError(new Error("boom")).code).toBe("UNKNOWN");
+  });
+  test("UNREACHABLE: no path reached the connectors, exit 10", async () => {
+    const { fail, EXIT } = await import("../src/errors");
+    expect(fail("UNREACHABLE", "x").exitCode).toBe(10);
+    expect("BRIDGE_BROKEN" in EXIT).toBe(false);
+  });
 });

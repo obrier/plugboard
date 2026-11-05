@@ -1,13 +1,13 @@
 // The safeguards every caller goes through: the CLI and the library alike. A read is decided by the
 // policy before a session opens; a write is refused, replayed or audited here, never by the caller.
 import { createHash } from "node:crypto";
-import { AxiError } from "axi-sdk-js";
+import { viaOf, type Via } from "./direct";
 import { appendAudit, claimKey, keyState, readAudit, type AuditEntry } from "./audit";
 import type { ClaudeConnectors, ConnectorServer } from "./bridge/client";
 import type { Manifest } from "./cache";
 import { prepare, requireManifest, requireTool, type Prepared } from "./call";
 import { costGuard } from "./claude";
-import { asAxiError, classify as classifyError, fail, wasNotSent, type Code } from "./errors";
+import { asPlugboardError, classify as classifyError, fail, PlugboardError, wasNotSent, type Code } from "./errors";
 import { errorText, unwrap } from "./output";
 import { classify, decide, profileFor, type Policy } from "./policy";
 
@@ -22,7 +22,7 @@ export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepa
   try {
     result = await client.request({ subtype: "mcp_call", tool: p.tool.sourceName, arguments: p.args }, { timeoutMs: deadlineMs });
   } catch (error) {
-    if (error instanceof AxiError) throw error; // a session that already knows what failed (the direct path) keeps its code
+    if (error instanceof PlugboardError) throw error; // a session that already knows what failed (the direct path) keeps its code
     const message = (error as Error).message;
     throw fail(classifyError(message), message);
   }
@@ -68,7 +68,8 @@ export function planCall(policy: Policy, profile: string, req: CallRequest, key?
   return { connector: p.manifest.id, tool: p.tool.name, class: p.cls, destructive: p.tool.annotations?.destructiveHint === true, profile, decision, hash: p.hash, payload: p.args };
 }
 
-export type ReadResult = { raw: Record<string, any>; value: unknown };
+/** `via`: the path that served the call, the connector proxy direct or Claude Code. */
+export type ReadResult = { raw: Record<string, any>; value: unknown; via: Via };
 
 /** One read: the profile must allow it, the connector must be connected, and the session must stay zero-cost. */
 export async function callRead(open: OpenSession, policy: Policy, profile: string, req: CallRequest, deadlineMs: number): Promise<ReadResult> {
@@ -78,7 +79,7 @@ export async function callRead(open: OpenSession, policy: Policy, profile: strin
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
   const raw = await invoke(session, p, deadlineMs);
   await costGuard(session);
-  return { raw, value: unwrap(raw) };
+  return { raw, value: unwrap(raw), via: viaOf(raw) };
 }
 
 /** An attempt with no outcome yet, still within its deadline (and a minute's grace): another write is running it.
@@ -92,7 +93,7 @@ function inFlight(last: AuditEntry | undefined) {
 export type WriteRequest = { profile: string; key: string; expectHash: string; deadlineMs: number };
 export type WriteResult =
   | { replayed: true; key: string; ref: string | null; at?: string }
-  | { replayed: false; key: string; ref: string | null; raw: Record<string, any>; value: unknown };
+  | { replayed: false; key: string; ref: string | null; raw: Record<string, any>; value: unknown; via: Via };
 
 /** One write, never retried: the profile must allow it, the payload must be the approved one, and the
  * key names it once. Audited before the call, so a write that can't be audited is never sent. */
@@ -128,8 +129,8 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   try {
     claim = claimKey(key, { key, profile, connector: p.manifest.id, tool: p.tool.name, payload_sha256: p.hash, status: "attempt", pid: process.pid, deadline_ms: req.deadlineMs }, seen.length);
   } catch (error) { // the audit log can't record the attempt: nothing is sent
-    const e = asAxiError(error);
-    throw fail(e.code as Code, `Write ${key} was not sent: ${e.message}`, e.suggestions);
+    const e = asPlugboardError(error);
+    throw fail(e.code as Code, `Write ${key} was not sent: ${e.message}`, e.hints);
   }
   if (!claim.claimed) {
     const lost = replayOrRefuse(claim);
@@ -146,8 +147,8 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   try {
     raw = await invoke(session, p, req.deadlineMs);
   } catch (error) {
-    const code = error instanceof AxiError ? error.code : "UPSTREAM_ERROR";
-    if ((code === "TIMEOUT" || code === "BRIDGE_BROKEN") && !wasNotSent(error)) {
+    const code = error instanceof PlugboardError ? error.code : "UPSTREAM_ERROR";
+    if ((code === "TIMEOUT" || code === "UNREACHABLE") && !wasNotSent(error)) {
       appendAudit({ key, status: "unknown", code, ms: Date.now() - started });
       throw fail("WRITE_OUTCOME_UNKNOWN", `Write ${key} may or may not have happened: ${(error as Error).message}`, [
         `Check the destination by hand, then \`${BIN} audit resolve ${key} --sent|--not-sent\``,
@@ -160,5 +161,5 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const ref = refOf(value) ?? null;
   appendAudit({ key, status: "ok", ms: Date.now() - started, result_sha256: createHash("sha256").update(JSON.stringify(raw)).digest("hex"), ...(ref ? { ref } : {}) });
   try { await costGuard(session); } catch (error) { appendAudit({ key, status: "cost-guard", message: (error as Error).message }); throw error; }
-  return { replayed: false, key, ref, raw, value };
+  return { replayed: false, key, ref, raw, value, via: viaOf(raw) };
 }

@@ -268,11 +268,11 @@ test("a direct write refused before sending, whose fallback can't start Claude C
   const { fail } = await import("../src/errors");
   const direct = { ...manifest, server: { type: "claudeai-proxy", id: "mcpsrv_01slack" } };
   const refused = (async () => new Response("no", { status: 404 })) as unknown as typeof fetch;
-  const session = new DirectSession([direct], async () => { throw fail("BRIDGE_BROKEN", "Couldn't start Claude Code"); },
+  const session = new DirectSession([direct], async () => { throw fail("UNREACHABLE", "Couldn't start Claude Code"); },
     { login: () => ({ accessToken: "t", expiresAt: Date.now() + 3_600_000 }), fetch: refused });
   const req = { profile: "executor", key: "nostart", expectHash: planCall(policy, "executor", send).hash, deadlineMs: 1_000 };
   const error = await callWrite(async () => session, policy, send, req).catch(e => e);
-  expect(error.code).toBe("BRIDGE_BROKEN");
+  expect(error.code).toBe("UNREACHABLE");
   expect(readAudit().filter(e => e.key === "nostart").map(e => e.status)).toEqual(["attempt", "error"]);
   expect(keyState("nostart").state).toBe("error"); // a new call can retry it; nothing to resolve by hand
 });

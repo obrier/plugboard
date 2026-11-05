@@ -8,9 +8,8 @@ import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveI
 import { BIN, prepare, profileName } from "./call";
 import { invoke } from "./core";
 import { authStatus, claudePath, claudeVersion, connectClaude, costGuard } from "./claude";
-import { DirectSession, directEnabled } from "./direct";
-import { AxiError } from "axi-sdk-js";
-import { asAxiError, EXIT } from "./errors";
+import { DirectSession, resolveTransport } from "./direct";
+import { asPlugboardError, EXIT, PlugboardError } from "./errors";
 import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, saveJson, saveRecord, stateDir, windowsClaudeFromWSL } from "./platform";
 import { classify, DEFAULT_ALIASES, loadPolicy, matches, probeTools, profileFor, type Policy, type Profile } from "./policy";
 
@@ -25,7 +24,7 @@ export async function probe<T extends { name: string }>(tools: T[], call: (tool:
     const t0 = Date.now();
     try { await call(tool); return { tool, ms: Date.now() - t0 }; } catch (e) {
       error = `${tool.name}: ${(e as Error).message}`;
-      if (e instanceof AxiError && e.code !== "UPSTREAM_ERROR" && e.code !== "VALIDATION_ERROR") break;
+      if (e instanceof PlugboardError && e.code !== "UPSTREAM_ERROR" && e.code !== "VALIDATION_ERROR") break;
     }
   }
   return { error };
@@ -57,10 +56,10 @@ export async function doctor(argv: string[]) {
     if (remedy && status !== "ok" && status !== "info") help.push(remedy);
   };
 
-  // A protocol failure, explained as asAxiError does (a sandbox, say); otherwise the remedy for a breaking update.
+  // A protocol failure, explained as asPlugboardError does (a sandbox, say); otherwise the remedy for a breaking update.
   const protocolFail = (prefix: string, error: unknown) => {
-    const e = asAxiError(error);
-    const remedy = e.suggestions.find(h => !h.includes("plugboard doctor") && !h.includes("breaking update"));
+    const e = asPlugboardError(error);
+    const remedy = e.hints.find(h => !h.includes("plugboard doctor") && !h.includes("breaking update"));
     add("protocol", "fail", prefix + e.message, remedy ?? "Pin claude_path to the last good version, or wait for a bridge fix");
   };
 
@@ -104,17 +103,19 @@ export async function doctor(argv: string[]) {
       "Edit policy.toml, or run `plugboard refresh` if the tools are new");
   } catch (error) { add("policy", "fail", (error as Error).message, "Fix policy.toml"); }
   const required = prof ? requiredConnectors(prof) : [];
+  let transport = "auto";
+  try { transport = resolveTransport(policy); } catch (error) { add("transport", "fail", (error as Error).message, "Use auto, direct or claude-code"); }
 
   /** The same read as calls make it: direct to the connector proxy, never through Claude Code. A proxy that
    * answers but fails a read Claude Code made leaves the connector's calls failing with no fallback: blind. */
   async function checkDirect(id: string, manifest: Manifest, tools: ManifestTool[]) {
-    const session = new DirectSession([manifest], async () => { throw new Error("not direct"); });
+    const session = new DirectSession([manifest], async () => { throw new Error("not direct"); }, undefined, { fallback: false });
     const result = await probe(tools, tool => invoke(session, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
     if (result.tool) add(`direct:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
     else if (session.notDirect) add(`direct:${id}`, "warn", `calls go through Claude Code: ${session.notDirect}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
     else {
       blind.add(id);
-      add(`direct:${id}`, "fail", `the connector proxy failed a read Claude Code made: ${(result.error ?? "").slice(0, 160)}`, "Set PLUGBOARD_DIRECT=0 until Plugboard is updated");
+      add(`direct:${id}`, "fail", `the connector proxy failed a read Claude Code made: ${(result.error ?? "").slice(0, 160)}`, "Set PLUGBOARD_TRANSPORT=claude-code until Plugboard is updated");
     }
   }
 
@@ -195,13 +196,13 @@ export async function doctor(argv: string[]) {
         const result = await probe(tools, tool => invoke(client!, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
         if (result.tool) {
           add(`read:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
-          if (directEnabled()) await checkDirect(id, manifest, tools);
+          if (transport !== "claude-code") await checkDirect(id, manifest, tools);
         } else {
           blind.add(id);
           add(`read:${id}`, "fail", (result.error ?? "").slice(0, 160), `Reconnect ${manifest.connectorName.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
         }
       }
-      if (!directEnabled()) add("direct", "info", "off: every call starts Claude Code (PLUGBOARD_DIRECT=0, or a custom CLAUDE_CONFIG_DIR)");
+      if (transport === "claude-code") add("direct", "info", "off: the transport is claude-code, so every call starts Claude Code (set in policy.toml or PLUGBOARD_TRANSPORT, or auto with a custom CLAUDE_CONFIG_DIR)");
       // 5: zero cost (after every call above)
       try {
         costText = await costGuard(client);
@@ -228,7 +229,7 @@ export async function doctor(argv: string[]) {
 
   const warned = checks.some(c => c.status === "warn");
   const otherFail = checks.some(c => c.status === "fail");
-  let exitCode = broken || !version ? EXIT.BRIDGE_BROKEN : blind.size ? EXIT.PARTIAL : otherFail ? 1 : warned && values.strict ? EXIT.PARTIAL : EXIT.OK;
+  let exitCode = broken || !version ? EXIT.UNREACHABLE : blind.size ? EXIT.PARTIAL : otherFail ? 1 : warned && values.strict ? EXIT.PARTIAL : EXIT.OK;
   const result = {
     claude: version ? `${version}${tested.includes(version) ? " (tested)" : ""}` : "missing",
     bridge: broken || !version ? "broken" : `ok${readyMs ? ` (ready ${(readyMs / 1000).toFixed(1)}s, $0.0000, 0 tokens)` : ""}`,

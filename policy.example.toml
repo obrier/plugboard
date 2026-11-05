@@ -3,6 +3,7 @@
 # named exactly in a profile with mode = "write". deny beats allow. No profile → "default".
 version = 1
 # claude_path = "~/.local/share/claude/versions/2.1.312"   # rollback lever after a breaking update
+# transport = "auto"   # auto: the connector proxy direct, Claude Code as the fallback; direct: never Claude Code; claude-code: always
 
 [aliases]           # merged over the built-in ones (cal, gcal, drive)
 
