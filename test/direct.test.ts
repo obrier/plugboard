@@ -309,3 +309,64 @@ describe("the shared session", () => {
     await s.close();
   });
 });
+
+describe("the shared session, when Claude Code fails", () => {
+  const VIA_CLAUDE = { content: [{ type: "text", text: "via claude" }] };
+  const refusing = () => proxy(() => new Response("no", { status: 404 }));
+  /** A Claude Code that can crash, or report a cost. */
+  function claudeThat(o: { cost?: string; failCalls?: boolean } = {}) {
+    let opened = 0;
+    const clients: { closed: boolean }[] = [];
+    const open = async () => {
+      opened++;
+      const c = {
+        closed: false,
+        request: async (req: any) => {
+          if (c.closed) throw new Error("Claude connector client is closed");
+          if (req.subtype === "get_session_cost") return { text: o.cost ?? "Total cost: $0.0000\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" };
+          if (o.failCalls) throw new Error("the connector failed");
+          return VIA_CLAUDE;
+        },
+        waitForServers: async () => [{ name: calendar.connectorName, status: "connected", tools: [] }],
+        close: async () => { c.closed = true; },
+      };
+      clients.push(c);
+      return c;
+    };
+    return { open, clients, opened: () => opened };
+  }
+
+  test("a Claude Code that crashed is replaced by the next call that needs it", async () => {
+    const c = claudeThat();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: refusing().fetch });
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    c.clients[0]!.closed = true; // it exited
+    expect(await s.request<unknown>(CALL)).toEqual(VIA_CLAUDE);
+    expect(c.opened()).toBe(2);
+    await s.close();
+  });
+
+  test("a cost Claude Code reached is still reported once it closed when idle", async () => {
+    const c = claudeThat({ cost: "Total cost: $0.1200\nUsage: 10 input, 5 output, 0 cache read, 0 cache write", failCalls: true });
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: refusing().fetch }, { idleMs: 30 });
+    await s.request<unknown>(CALL).catch(() => undefined); // failed: the core skips its cost check
+    await Bun.sleep(80); // closed when idle
+    await expect(costGuard(s)).rejects.toMatchObject({ code: "COST_GUARD" });
+  });
+
+  test("a Claude Code that crashed before its last calls' cost was checked fails the cost check", async () => {
+    const c = claudeThat({ failCalls: true });
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: refusing().fetch });
+    await s.request<unknown>(CALL).catch(() => undefined);
+    c.clients[0]!.closed = true; // it exited before anyone asked its cost
+    await expect(costGuard(s)).rejects.toMatchObject({ code: "COST_GUARD" });
+  });
+
+  test("a refreshed manifest replaces the one taken on: its new connector ID is called", async () => {
+    const p = proxy(ok()), c = claudeThat();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: p.fetch });
+    s.use([{ ...calendar, capturedAt: "2026-11-06T00:00:00Z", server: { ...calendar.server!, id: "mcpsrv_02cal" } }]);
+    await s.request<unknown>(CALL);
+    expect(p.sent[0]!.url).toBe(`${PROXY_ORIGIN}/v1/mcp/mcpsrv_02cal`);
+  });
+});

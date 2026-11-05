@@ -187,3 +187,13 @@ console.log("used");
     await Bun.sleep(200);
     expect(() => process.kill(pid, 0)).toThrow(); // Claude Code was stopped with it
   }, 20_000);
+
+test("a request to a client whose Claude Code exited was never sent, and the client says it's closed", async () => {
+  const { wasNotSent } = await import("../src/errors");
+  const client = await connect();
+  await client.request({ subtype: "mcp_call", tool: "x", arguments: { action: "exit" } }).catch(() => undefined);
+  await Bun.sleep(100);
+  expect(client.closed).toBe(true);
+  const error = await client.request({ subtype: "mcp_status" }).catch(e => e);
+  expect(wasNotSent(error)).toBe(true);
+});

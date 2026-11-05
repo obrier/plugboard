@@ -17,7 +17,10 @@ export const PROXY_ORIGIN = "https://mcp-proxy.anthropic.com";
 const PROTOCOL = "2025-11-25"; // the proxy refuses newer protocol versions (checked 2026-11-05)
 
 export type Login = { accessToken: string; expiresAt?: number; scopes?: string[] };
-type Client = Pick<ClaudeConnectors, "request" | "waitForServers" | "close">;
+type Client = Pick<ClaudeConnectors, "request" | "waitForServers" | "close"> & { readonly closed?: boolean };
+
+/** get_session_cost's answer for a session that reached no model: $0 and no tokens. */
+export const isZeroCost = (text: string) => /\$0\.0000\b/.test(text) && /Usage:\s+0 input, 0 output, 0 cache read, 0 cache write/.test(text);
 export type DirectDeps = { login: () => Login | undefined; fetch: typeof fetch };
 
 /** How a call reaches its connector: direct to the proxy with Claude Code as the fallback (auto), direct only, or
@@ -85,6 +88,9 @@ export class DirectSession {
   /** Why the last call went through Claude Code (doctor reports it); nothing once a call goes direct. */
   notDirect?: string;
   private claude?: Promise<Client>;
+  private live?: Client; // the Claude Code that started
+  private unchecked = false; // calls made through it since its cost was last asked
+  private lostCost?: string; // a cost Claude Code reached, or couldn't report, before it closed: reported from then on
   private discovered: ConnectorServer[] = []; // Claude Code's last list, for the same check as without the direct path
   private readonly discoveredNames = new Set<string>();
   private busy = 0; // calls using Claude Code right now
@@ -96,11 +102,17 @@ export class DirectSession {
     this.use(needs);
   }
 
-  /** Takes these connectors on; one already taken on is no change. */
+  /** Takes these connectors on. One already taken on is no change, unless this manifest was captured since: then it
+   * replaces the old one (a refresh can change a connector's ID and tools), and the proxy is asked again. */
   use(manifests: Manifest[]) {
     for (const m of manifests) {
-      if (this.manifests.some(known => known.id === m.id)) continue;
-      this.manifests.push(m);
+      const at = this.manifests.findIndex(known => known.id === m.id);
+      if (at >= 0) {
+        if (this.manifests[at]!.capturedAt === m.capturedAt) continue;
+        for (const t of this.manifests[at]!.tools) this.tools.delete(t.sourceName);
+        this.refused.delete(m.id);
+        this.manifests[at] = m;
+      } else this.manifests.push(m);
       for (const t of m.tools) this.tools.set(t.sourceName, { id: typeof m.server?.id === "string" ? m.server.id : undefined, name: t.name, manifest: m });
     }
   }
@@ -130,10 +142,25 @@ export class DirectSession {
       : undefined;
   }
 
-  /** Claude Code, started once and kept while used; a start that failed is tried again by the next call. */
+  /** Claude Code, started once and kept while used; one that exited, or a start that failed, is replaced by the next call. */
   private client(): Promise<Client> {
     if (this.idle) { clearTimeout(this.idle); this.idle = undefined; }
-    return this.claude ??= this.openClaude().catch(error => { this.claude = undefined; throw error; });
+    if (this.live?.closed) this.retire();
+    return this.claude ??= this.openClaude().then(client => (this.live = client), error => { this.claude = undefined; throw error; });
+  }
+
+  /** Forgets the Claude Code in use, so the next call starts another. A cost it can no longer report is kept as lost. */
+  private retire() {
+    if (this.unchecked && this.live?.closed) { // exited: its cost can no longer be asked (shut() asks one still running)
+      this.lostCost ??= "Claude Code exited before the cost of its last calls was checked";
+      this.unchecked = false;
+    }
+    const live = this.live;
+    this.claude = undefined;
+    this.live = undefined;
+    this.discovered = [];
+    this.discoveredNames.clear();
+    return live;
   }
 
   /** A call through Claude Code, for this reason: refused under the transport direct. */
@@ -157,19 +184,28 @@ export class DirectSession {
     this.busy++;
     try { return await work(); } finally {
       if (--this.busy === 0 && this.claude) {
-        this.idle = setTimeout(() => void this.shut(), this.options.idleMs ?? 30_000);
+        this.idle = setTimeout(() => void this.shut().catch(() => {}), this.options.idleMs ?? 30_000);
         this.idle.unref?.(); // the timer never keeps a program from exiting
       }
     }
   }
 
+  /** Closes Claude Code. Calls whose cost the core didn't check (a call that failed skips it) are checked first:
+   * a cost they reached is reported by every later cost check, not lost with the process. */
   private async shut() {
     this.idle = undefined;
     const claude = this.claude;
-    this.claude = undefined;
-    this.discovered = [];
-    this.discoveredNames.clear();
-    await (await claude?.catch(() => undefined))?.close();
+    const unchecked = this.unchecked;
+    this.unchecked = false;
+    const live = this.retire() ?? await claude?.catch(() => undefined);
+    if (!live) return;
+    if (unchecked) {
+      try {
+        const { text } = await live.request<{ text: string }>({ subtype: "get_session_cost" });
+        if (!isZeroCost(text)) this.lostCost ??= text;
+      } catch { this.lostCost ??= "Claude Code closed before the cost of its last calls could be checked"; }
+    }
+    await live.close();
   }
 
   async waitForServers(names?: string[]): Promise<ConnectorServer[]> {
@@ -206,14 +242,26 @@ export class DirectSession {
         } catch (error) { throw markNotSent(error); }
         // As without the direct path: a connector Claude Code doesn't list as connected is refused before the call.
         if (tool) requireConnected(this.discovered, tool.manifest);
+        this.unchecked = true;
         return client.request<T>(request, options);
       });
     }
-    // Nothing but the proxy was reached while Claude Code isn't running: the session's cost is zero by construction.
-    // Each call's cost is checked right after it, so a Claude Code closed when idle was checked before it closed.
-    if (request.subtype === "get_session_cost" && !this.claude)
-      return { text: "Total cost: $0.0000 (connector proxy only)\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" } as T;
-    return this.using(async () => (await this.client()).request<T>(request, options));
+    if (request.subtype === "get_session_cost") {
+      if (this.live?.closed) this.retire(); // it exited: a cost it didn't report is lost, and says so
+      if (this.lostCost) return { text: this.lostCost } as T;
+      // Nothing but the proxy was reached while Claude Code isn't running: zero by construction.
+      if (!this.claude) return { text: "Total cost: $0.0000 (connector proxy only)\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" } as T;
+      return this.using(async () => {
+        const answer = await (await this.client()).request<T>(request, options);
+        this.unchecked = false;
+        return answer;
+      });
+    }
+    return this.using(async () => {
+      const client = await this.client();
+      this.unchecked = true;
+      return client.request<T>(request, options);
+    });
   }
 
   async close() {

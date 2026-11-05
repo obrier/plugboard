@@ -6,6 +6,7 @@ import { captureConnectorSchemas, childEnv, POLL_MS } from "./capture";
 import { setTimeout as sleep } from "node:timers/promises";
 import { runtime as detected, type Proc, type Runtime } from "../runtime";
 import type { ToolSchema } from "./capture";
+import { markNotSent } from "../errors";
 
 export type ToolMetadata = {
   name: string;
@@ -128,11 +129,15 @@ export class ClaudeConnectors {
 
   get messageTypes(): Readonly<Record<string, number>> { return { ...this.counts }; }
 
+  /** Closed, or Claude Code exited: no request will be answered. */
+  get closed(): boolean { return this.closedError !== undefined; }
+
   /** Sends a control request. Never retries calls automatically. */
   async request<T = Record<string, unknown>>(
     request: ControlRequest, options: { timeoutMs?: number } = {},
   ): Promise<T> {
-    if (this.closedError) throw this.closedError;
+    // Closed or exited: this request is never sent, so a write records it as not sent.
+    if (this.closedError) throw markNotSent(new Error(this.closedError.message));
     const timeoutMs = positiveTimeout(options.timeoutMs ?? this.requestTimeoutMs);
     const requestId = crypto.randomUUID();
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
