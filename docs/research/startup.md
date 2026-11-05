@@ -204,3 +204,14 @@ inspected.
 - `claude --help` (`--bare`).
 - Probes: `research/startup/probe.ts`, `bench.ts`, `window.ts`, `status.ts`, `direct.ts`, `list.ts`,
   `bench-direct.ts`; configs `one.json`, `one-stateless.json`, `context7-stateless.json`.
+
+## Benchmark of option A (run 2026-11-05, after Arindo approved the token step)
+
+`bun research/startup/bench-direct.ts 9 . -- "bun src/cli.ts google-calendar list-calendars --select x" "bun research/startup/direct.ts mcpsrv_01UkR3rNSMJYp6xdyb7WgByL list_calendars"`, 9 alternating runs, every run exit 0:
+
+| Command | median | min | max |
+|---|---|---|---|
+| plugboard 0.1.2 CLI | 2010 ms | 1862 | 2286 |
+| direct proxy call | 583 ms | 530 | 852 |
+
+The direct script has no policy, audit or output shaping; plugboard's own startup measured 45–70 ms earlier, so a hot path inside plugboard would land near 0.65 s.
