@@ -90,3 +90,27 @@ try { await call(req); } catch (e) {
 - The library throws its own `PlugboardError` (`code`, `message`, `hints`, `exitCode`), not `axi-sdk-js`'s `AxiError`: users don't import a dependency's type to catch ours.
 - The codes are the CLI's. `BRIDGE_BROKEN` is renamed `UNREACHABLE`: Plugboard couldn't reach your connectors by any path (the proxy refused, and Claude Code couldn't start, its protocol changed, or a sandbox blocked it). Exit code 10 is unchanged. The skill and the harness guides document the exit number, not the string; the rename ships with a release note, in the CLI and the library alike.
 - `COST_GUARD` keeps its name: a model was reached.
+
+## 5. One `transport` setting: `auto`, `direct`, `claude-code`
+
+Chosen 2026-11-05, over keeping `PLUGBOARD_DIRECT`.
+
+| `transport` | Behaviour |
+|---|---|
+| `"auto"` (default) | Direct to the connector proxy, falling back to Claude Code when the proxy refuses |
+| `"direct"` | Never starts Claude Code; a refusal is `UNREACHABLE` (sandboxes that block spawning, servers that must run no child process) |
+| `"claude-code"` | Always through Claude Code |
+
+```ts
+await call({ ...req, transport: "claude-code" }); // one call
+createPlugboard({ transport: "direct" });         // one instance
+```
+```toml
+transport = "auto"  # policy.toml: the CLI and the library
+```
+
+- Also `PLUGBOARD_TRANSPORT` in the environment. Narrowest wins: call, instance, environment, policy.
+- The values are the words `via` reports.
+- `PLUGBOARD_DIRECT=0`, released in 0.1.3, is read as `claude-code` for one release, then dropped.
+- `claude_path` and `PLUGBOARD_CLAUDE` keep their names: they say where Claude Code is, which `refresh`, `doctor` and the fallback still need.
+- `connect`, `Session`, `DirectSession` and `src/bridge/` are internal, not part of the public API.
