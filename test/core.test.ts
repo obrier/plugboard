@@ -283,3 +283,13 @@ test("a session is opened for the connector the call names: a shared session tak
   await callRead(async m => { opened.push(m.id); return s.session; }, policy, "default", search, 1_000);
   expect(opened).toEqual(["slack"]);
 });
+
+test("a write cancelled before it starts opens no session and records nothing", async () => {
+  const s = fakeSession();
+  const before = readAudit().length;
+  const plan = planCall(policy, "executor", send);
+  const error = await callWrite(s.open, policy, send, { profile: "executor", key: "k-cancel", expectHash: plan.hash, deadlineMs: 1_000, signal: AbortSignal.abort() }).catch(e => e);
+  expect(error.code).toBe("TIMEOUT");
+  expect(s.opened()).toBe(0);
+  expect(readAudit().length).toBe(before);
+});

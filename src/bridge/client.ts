@@ -6,7 +6,7 @@ import { captureConnectorSchemas, childEnv, POLL_MS } from "./capture";
 import { setTimeout as sleep } from "node:timers/promises";
 import { runtime as detected, type Proc, type Runtime } from "../runtime";
 import type { ToolSchema } from "./capture";
-import { markNotSent } from "../errors";
+import { fail, markNotSent } from "../errors";
 
 export type ToolMetadata = {
   name: string;
@@ -132,28 +132,39 @@ export class ClaudeConnectors {
   /** Closed, or Claude Code exited: no request will be answered. */
   get closed(): boolean { return this.closedError !== undefined; }
 
-  /** Sends a control request. Never retries calls automatically. */
+  /** Sends a control request. Never retries calls automatically. A `signal` cancels it: before it was sent, it is
+   * marked not sent; after, it is a TIMEOUT, since the tool may have run. */
   async request<T = Record<string, unknown>>(
-    request: ControlRequest, options: { timeoutMs?: number } = {},
+    request: ControlRequest, options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<T> {
     // Closed or exited: this request is never sent, so a write records it as not sent.
     if (this.closedError) throw markNotSent(new Error(this.closedError.message));
+    const { signal } = options;
+    if (signal?.aborted) throw markNotSent(fail("TIMEOUT", `Cancelled before ${request.subtype} was sent`));
     const timeoutMs = positiveTimeout(options.timeoutMs ?? this.requestTimeoutMs);
     const requestId = crypto.randomUUID();
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      // Best effort cancellation: neither a timeout nor a cancel proves the tool didn't run.
+      const giveUp = (error: Error) => {
+        clearTimeout(timer);
         this.pending.delete(requestId);
-        // Best effort cancellation: a timeout does not prove the tool didn't run.
         try { this.send({ type: "control_cancel_request", request_id: requestId }); } catch { /* exited */ }
-        reject(new Error(`Timed out waiting for ${request.subtype}`));
-      }, timeoutMs);
-      this.pending.set(requestId, { resolve, reject, timer });
+        settle.reject(error);
+      };
+      const onAbort = () => giveUp(fail("TIMEOUT", `Timed out waiting for ${request.subtype}: cancelled; the connector may have run it`));
+      const settle = {
+        resolve: (value: Record<string, unknown>) => { signal?.removeEventListener("abort", onAbort); resolve(value); },
+        reject: (error: Error) => { signal?.removeEventListener("abort", onAbort); reject(error); },
+      };
+      const timer = setTimeout(() => giveUp(new Error(`Timed out waiting for ${request.subtype}`)), timeoutMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.pending.set(requestId, { resolve: settle.resolve, reject: settle.reject, timer });
       try {
         this.send({ type: "control_request", request_id: requestId, request });
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(requestId);
-        reject(error);
+        settle.reject(error as Error);
       }
     });
     return response as T;

@@ -18,10 +18,10 @@ export { BIN, requireConnected };
 export type Session = Pick<ClaudeConnectors, "request" | "waitForServers">;
 export type OpenSession = (manifest: Manifest) => Promise<Session>;
 
-export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepared, deadlineMs: number) {
+export async function invoke(client: Pick<ClaudeConnectors, "request">, p: Prepared, deadlineMs: number, signal?: AbortSignal) {
   let result: Record<string, any>;
   try {
-    result = await client.request({ subtype: "mcp_call", tool: p.tool.sourceName, arguments: p.args }, { timeoutMs: deadlineMs });
+    result = await client.request({ subtype: "mcp_call", tool: p.tool.sourceName, arguments: p.args }, { timeoutMs: deadlineMs, signal });
   } catch (error) {
     if (error instanceof PlugboardError) throw error; // a session that already knows what failed (the direct path) keeps its code
     const message = (error as Error).message;
@@ -79,12 +79,13 @@ export function planCall(policy: Policy, profile: string, req: CallRequest, key?
 export type ReadResult = { raw: Record<string, any>; value: unknown; via: Via };
 
 /** One read: the profile must allow it, the connector must be connected, and the session must stay zero-cost. */
-export async function callRead(open: OpenSession, policy: Policy, profile: string, req: CallRequest, deadlineMs: number): Promise<ReadResult> {
+export async function callRead(open: OpenSession, policy: Policy, profile: string, req: CallRequest, deadlineMs: number, signal?: AbortSignal): Promise<ReadResult> {
   const p = mint(policy, req);
   decide(policy, profile, p.manifest.id, p.tool, false);
+  stopIfCancelled(signal, "Read");
   const session = await open(p.manifest);
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
-  const raw = await invoke(session, p, deadlineMs);
+  const raw = await invoke(session, p, deadlineMs, signal);
   await costGuard(session);
   return { raw, value: unwrap(raw), via: viaOf(raw) };
 }
@@ -97,7 +98,12 @@ function inFlight(last: AuditEntry | undefined) {
   return Date.now() - Date.parse(last.ts) < deadline + 60_000;
 }
 
-export type WriteRequest = { profile: string; key: string; expectHash: string; deadlineMs: number };
+export type WriteRequest = { profile: string; key: string; expectHash: string; deadlineMs: number; signal?: AbortSignal };
+
+/** A call cancelled before it started: nothing was opened or sent. */
+function stopIfCancelled(signal: AbortSignal | undefined, what: string) {
+  if (signal?.aborted) throw fail("TIMEOUT", `${what} cancelled before it started: nothing was sent`);
+}
 export type WriteResult =
   | { replayed: true; key: string; ref: string | null; at?: string }
   | { replayed: false; key: string; ref: string | null; raw: Record<string, any>; value: unknown; via: Via };
@@ -129,8 +135,10 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const early = replayOrRefuse(keyState(key, seen)); // no session for a key already sent or unresolved
   if (early) return early;
 
+  stopIfCancelled(req.signal, `Write ${key}`);
   const session = await open(p.manifest);
   requireConnected(await session.waitForServers([p.manifest.connectorName]), p.manifest);
+  stopIfCancelled(req.signal, `Write ${key}`); // still unclaimed: nothing to record
   // Re-checked and claimed in one step right before the call: a concurrent write under this key can't also send.
   let claim: ReturnType<typeof claimKey>;
   try {
@@ -152,7 +160,7 @@ export async function callWrite(open: OpenSession, policy: Policy, call: CallReq
   const started = Date.now();
   let raw: Record<string, any>;
   try {
-    raw = await invoke(session, p, req.deadlineMs);
+    raw = await invoke(session, p, req.deadlineMs, req.signal);
   } catch (error) {
     const code = error instanceof PlugboardError ? error.code : "UPSTREAM_ERROR";
     if ((code === "TIMEOUT" || code === "UNREACHABLE") && !wasNotSent(error)) {

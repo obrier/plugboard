@@ -116,7 +116,7 @@ export async function doctor(argv: string[]) {
    * through Claude Code (a warning), under direct they fail (blind). A read the proxy fails after the request
    * left fails calls under either: blind. */
   async function checkDirect(id: string, manifest: Manifest, tools: ManifestTool[]) {
-    const session = new DirectSession([manifest], async () => { throw new Error("not direct"); }, undefined, { fallback: false });
+    const session = new DirectSession([manifest], async () => { throw new Error("not direct"); }, undefined, { transport: "direct" });
     const notDirect = (why: string) => {
       if (!direct) return add(`direct:${id}`, "warn", `calls go through Claude Code: ${why}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
       blind.add(id); // the transport allows no fallback: its calls fail

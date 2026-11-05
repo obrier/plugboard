@@ -29,7 +29,7 @@ export function authStatus(path: string): { loggedIn: boolean; method?: string }
  * it's Claude Code's. */
 export async function connect(policy: Policy, needs: Manifest[] = [], transport?: Transport): Promise<Pick<ClaudeConnectors, "request" | "waitForServers" | "close">> {
   const t = resolveTransport(policy, transport);
-  if (needs.length && t !== "claude-code") return new DirectSession(needs, () => connectClaude(policy), undefined, { fallback: t === "auto" });
+  if (needs.length && t !== "claude-code") return new DirectSession(needs, () => connectClaude(policy), undefined, { transport: t });
   return connectClaude(policy);
 }
 
