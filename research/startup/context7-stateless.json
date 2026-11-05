@@ -1,0 +1,1 @@
+{"mcpServers":{"claude.ai Context7":{"type":"claudeai-proxy","url":"https://mcp.context7.com/mcp","id":"mcpsrv_01BvFQL9hDhrqH33N3bdr4px","stateless":true,"cachedInitResponse":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"Context7","version":"4.5.0"}}}}}
