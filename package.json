@@ -1,6 +1,6 @@
 {
   "name": "plugboard",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "claude.ai connector tools as shell commands, at zero model tokens",
   "type": "module",
   "private": true,

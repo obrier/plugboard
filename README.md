@@ -59,6 +59,12 @@ It keeps its files in the XDG locations, `$XDG_CONFIG_HOME`, `$XDG_CACHE_HOME` a
 brew install obrier/tap/plugboard
 ```
 
+Homebrew 7 loads formulae from third-party taps only once they're trusted, and installing by the full name, as above, trusts this one formula. If you installed Plugboard with an earlier Homebrew and `brew upgrade` now skips it, trust it once ([Tap Trust](https://docs.brew.sh/Tap-Trust)):
+
+```bash
+brew trust --formula obrier/tap/plugboard
+```
+
 Then capture your connectors' tool schemas and check that everything works:
 
 ```bash
