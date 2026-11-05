@@ -38,6 +38,32 @@ afterEach(() => pb.close());
 const calls = () => (existsSync(join(fake, "calls.jsonl")) ? readFileSync(join(fake, "calls.jsonl"), "utf8").trim().split("\n").map(l => JSON.parse(l)) : []);
 const NOTE = { connector: "slack", tool: "create-note", args: { text: "n" }, profile: "executor" };
 
+describe("batch", () => {
+  test("async iterables in and out: { id, ok, value, raw, via } or { id, ok: false, error }, in input order when asked", async () => {
+    async function* lines() {
+      yield { id: "a", connector: "slack", tool: "search-public", args: { query: "x" } };
+      yield { id: "w", connector: "slack", tool: "send-message", args: { channel_id: "D1", message: "hi" }, profile: "executor" };
+      yield { connector: "slack", tool: "search-public", args: { query: "y" } };
+    }
+    const out = await Array.fromAsync(pb.batch(lines(), { ordered: true }));
+    expect(out.map(r => r.id)).toEqual(["a", "w", 2]);
+    expect(Object.keys(out[0]!).sort()).toEqual(["id", "ok", "raw", "value", "via"]);
+    expect(out[0]).toMatchObject({ ok: true, value: { matches: [{ user: "jose" }, { user: "ana" }] }, via: "claude-code" });
+    const refused = out[1]!;
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) { expect(refused.error).toBeInstanceOf(PlugboardError); expect(refused.error.code).toBe("POLICY_DENIED"); }
+    expect(calls().filter(c => c.tool.endsWith("send_message"))).toHaveLength(0);
+  });
+
+  test("the module's batch is the default instance's", async () => {
+    const { batch } = await import("../src/index");
+    const out = await Array.fromAsync(batch([{ connector: "slack", tool: "search-public", args: { query: "x" } }]));
+    expect(out).toMatchObject([{ id: 0, ok: true }]);
+    const { close } = await import("../src/index");
+    await close();
+  });
+});
+
 describe("call", () => {
   test("reads: { value, raw, via }, by connector ID and the CLI's short tool name", async () => {
     const r = await pb.call({ connector: "slack", tool: "search-public", args: { query: "x" } });

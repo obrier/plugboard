@@ -5,9 +5,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimKey, keyState, readAudit, unresolvedKeys } from "../src/audit";
-import { runBatch } from "../src/batch";
 import type { Manifest } from "../src/cache";
-import { callRead, callWrite, planCall, type Session } from "../src/core";
+import { callBatch, callRead, callWrite, planCall, type BatchLine, type BatchResult, type Session } from "../src/core";
+import { fail, type PlugboardError } from "../src/errors";
 import { parsePolicy } from "../src/policy";
 import { writeJson } from "../src/platform";
 
@@ -55,6 +55,11 @@ afterEach(() => {
 const codeOf = async (promise: Promise<unknown>) => promise.then(() => "OK", (e: { code?: string }) => e.code);
 
 describe("callRead", () => {
+  test("a read that fails still has its cost checked: a model reached is COST_GUARD, not the read's own error", async () => {
+    const s = fakeSession({ fail: new Error("upstream exploded"), cost: "Total cost: $0.0300\nUsage: 10 input, 5 output, 0 cache read, 0 cache write" });
+    expect(await codeOf(callRead(s.open, policy, "default", search, 1_000))).toBe("COST_GUARD");
+  });
+
   test("sends exactly the cached tool, with the args it validated; then the cost guard", async () => {
     const s = fakeSession();
     const out = await callRead(s.open, policy, "default", search, 1_000);
@@ -122,23 +127,127 @@ describe("callWrite", () => {
     expect(await codeOf(callWrite(fakeSession().open, policy, send, req({ key: "k2" })))).toBe("WRITE_OUTCOME_UNKNOWN");
     expect(readAudit().map(e => e.status)).toEqual(["attempt", "unknown"]);
   });
+  test("a write that fails still has its cost checked, and the cost guard is audited", async () => {
+    const s = fakeSession({ fail: new Error("upstream exploded"), cost: "Total cost: $0.0100" });
+    const error = await callWrite(s.open, policy, send, req({ key: "k4" })).catch(e => e);
+    expect(error.code).toBe("COST_GUARD");
+    expect(error.message).toContain("upstream exploded");
+    expect(readAudit().map(e => e.status)).toEqual(["attempt", "error", "cost-guard"]);
+  });
   test("a cost guard that fails after the send is audited", async () => {
     expect(await codeOf(callWrite(fakeSession({ cost: "Total cost: $0.0100" }).open, policy, send, req({ key: "k3" })))).toBe("COST_GUARD");
     expect(readAudit().map(e => e.status)).toEqual(["attempt", "ok", "cost-guard"]);
   });
 });
 
-test("batch checks connections once for the whole batch, then each line through the core", async () => {
-  const s = fakeSession();
-  const lines = ["a", "b", "c", "d"].map(q => JSON.stringify({ connector: "slack", tool: "slack_search", args: { query: q } })).join("\n");
-  const outs: { ok: boolean }[] = [];
-  const opened: string[][] = [];
-  const code = await runBatch(lines, { profile: "default", concurrency: 2, perConnector: 2, ordered: true, budgetMs: 10_000 }, out => outs.push(out),
-    async needs => { opened.push(needs.map(m => m.id)); return { ...s.session, close: async () => {} }; });
-  expect(code).toBe(0);
-  expect(outs.map(o => o.ok)).toEqual([true, true, true, true]);
-  expect(s.statusChecks()).toBe(1);
-  expect(opened).toEqual([["slack", "slack", "slack", "slack"]]); // the session is opened for the lines' connectors
+describe("callBatch: async iterables in and out", () => {
+  const settings = { profile: "default", concurrency: 2, perConnector: 2, ordered: false };
+  const line = (query: string, id?: string): BatchLine => ({ ...(id ? { id } : {}), connector: "slack", tool: "slack_search", args: { query } });
+  /** A session whose answer to each query waits as the query says: "slow" 60 ms, "hang" until cancelled, "down" fails. */
+  function scripted() {
+    const sent: string[] = [];
+    const cancelled: string[] = [];
+    const session: Session = {
+      waitForServers: async () => [{ name: "claude.ai Slack", status: "connected", tools: [] }],
+      request: async (request: any, options?: { signal?: AbortSignal }) => {
+        if (request.subtype === "get_session_cost") return { text: "Total cost: $0.0000\nUsage: 0 input, 0 output, 0 cache read, 0 cache write" } as any;
+        const q = String(request.arguments.query);
+        sent.push(q);
+        if (q === "down") throw fail("UNREACHABLE", "Claude Code exited", ["Run `plugboard doctor` for details"]);
+        if (q === "slow") await new Promise(r => setTimeout(r, 60));
+        if (q === "hang") await new Promise((_, reject) => options?.signal?.addEventListener("abort", () => { cancelled.push(q); reject(fail("TIMEOUT", "cancelled")); }));
+        return { structuredContent: { q } } as any;
+      },
+    };
+    return { open: () => async () => session, sent, cancelled };
+  }
+  const all = async <L extends BatchLine>(it: AsyncIterable<BatchResult<L>>) => { const out: BatchResult<L>[] = []; for await (const r of it) out.push(r); return out; };
+
+  test("results come back while the producer is still feeding it", async () => {
+    const s = scripted();
+    let firstSeen!: () => void;
+    const seen = new Promise<void>(r => (firstSeen = r));
+    async function* producer() { yield line("a"); await seen; yield line("b"); } // b only once a's result is out
+    const ids: unknown[] = [];
+    for await (const r of callBatch(s.open, policy, producer(), settings)) { ids.push(r.id); firstSeen(); }
+    expect(ids).toEqual([0, 1]);
+  });
+
+  test("completion order by default, input order with ordered; each line through the core", async () => {
+    const s = scripted();
+    const lines = [line("slow", "s"), line("fast", "f")];
+    expect((await all(callBatch(s.open, policy, lines, settings))).map(r => r.id)).toEqual(["f", "s"]);
+    const ordered = await all(callBatch(s.open, policy, lines, { ...settings, ordered: true }));
+    expect(ordered.map(r => r.id)).toEqual(["s", "f"]);
+    expect(ordered[0]).toMatchObject({ ok: true, value: { q: "slow" }, via: "claude-code" });
+  });
+
+  test("breaking out of the loop cancels the lines still running and closes the producer", async () => {
+    const s = scripted();
+    let closed = false;
+    async function* producer() { try { yield line("hang"); yield line("fast"); yield line("never"); } finally { closed = true; } }
+    for await (const r of callBatch(s.open, policy, producer(), { ...settings, concurrency: 2, perConnector: 2 })) { expect(r.ok).toBe(true); break; }
+    expect(s.cancelled).toEqual(["hang"]);
+    expect(s.sent).not.toContain("never");
+    expect(closed).toBe(true);
+  });
+
+  test("UNREACHABLE fails the lines already taken, sent to no one, and ends the batch, even with an endless producer; hints kept", async () => {
+    const s = scripted();
+    let pulled = 0;
+    function* endless() { yield line("down"); for (;;) { pulled++; yield line("more"); } }
+    const out = await all(callBatch(s.open, policy, endless(), { ...settings, concurrency: 1, ordered: true }));
+    expect(out[0]).toMatchObject({ ok: false, error: { code: "UNREACHABLE" } });
+    expect(out.every(r => !r.ok && r.error.code === "UNREACHABLE" && r.error.hints.includes("Run `plugboard doctor` for details"))).toBe(true);
+    expect(pulled).toBeLessThan(5);
+    expect(s.sent).toEqual(["down"]);
+  });
+
+  test("a stop cancels the lines still running: they fail with it", async () => {
+    const s = scripted();
+    const out = await all(callBatch(s.open, policy, [line("hang", "h"), line("down", "d")], { ...settings, concurrency: 2, ordered: true }));
+    expect(out.map(r => [r.id, !r.ok && r.error.code])).toEqual([["h", "UNREACHABLE"], ["d", "UNREACHABLE"]]);
+    expect(s.cancelled).toEqual(["hang"]);
+  });
+
+  test("a producer that throws: the lines it gave finish and are delivered, then its error", async () => {
+    const s = scripted();
+    async function* broken() { yield line("slow", "a"); yield line("fast", "b"); throw new Error("producer broke"); }
+    const seen: unknown[] = [];
+    const error = await (async () => { for await (const r of callBatch(s.open, policy, broken(), settings)) { seen.push(r.id); await new Promise(r => setTimeout(r, 30)); } })().catch(e => e);
+    expect((error as Error).message).toBe("producer broke");
+    expect(seen.sort()).toEqual(["a", "b"]);
+  });
+
+  test("ordered: results held for an earlier line count against the read-ahead", async () => {
+    const s = scripted();
+    let pulled = 0;
+    function* endless() { yield line("slow"); for (;;) { pulled++; yield line("fast"); } }
+    for await (const _ of callBatch(s.open, policy, endless(), { ...settings, concurrency: 2, perConnector: 2, ordered: true })) break;
+    expect(pulled).toBeLessThan(10);
+  });
+
+  test("a line cancelled by its own signal is not retried", async () => {
+    const s = scripted();
+    const out = await all(callBatch(s.open, policy, [{ ...line("hang"), signal: AbortSignal.timeout(20) }], settings));
+    expect(out[0]).toMatchObject({ ok: false, attempts: 1, retryable: false, error: { code: "TIMEOUT" } });
+    expect(s.sent).toEqual(["hang"]);
+  });
+
+  test("a write tool, a bad line, a producer's own error and a profile that refuses are each one line's failure", async () => {
+    const s = scripted();
+    const items: (BatchLine | PlugboardError)[] = [
+      { connector: "slack", tool: "slack_send", args: { text: "hi" } },
+      { connector: 7 } as unknown as BatchLine,
+      fail("VALIDATION_ERROR", "line 3 is not JSON"),
+      { ...line("x"), profile: "nosearch" },
+      line("ok", "fine"),
+    ];
+    const out = await all(callBatch(s.open, policy, items, { ...settings, ordered: true }));
+    expect(out.map(r => r.id)).toEqual([0, 1, 2, 3, "fine"]);
+    expect(out.map(r => r.ok ? "ok" : r.error.code)).toEqual(["POLICY_DENIED", "VALIDATION_ERROR", "VALIDATION_ERROR", "POLICY_DENIED", "ok"]);
+    expect(s.sent).toEqual(["ok"]);
+  });
 });
 
 describe("what is approved is what is sent", () => {

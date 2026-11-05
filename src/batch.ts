@@ -1,146 +1,62 @@
 import { parseArgs } from "node:util";
-import type { Manifest } from "./cache";
+import { createInterface } from "node:readline";
 import { encode } from "@toon-format/toon";
-import type { ClaudeConnectors } from "./bridge/client";
-import { connect, costGuard } from "./claude";
-import { asPlugboardError, EXIT, fail, retryAfterMs, type Code } from "./errors";
+import { connectClaude } from "./claude";
+import { asPlugboardError, EXIT, fail, type Code, type PlugboardError } from "./errors";
 import { parseDeadline, profileName } from "./call";
-import { prepare, requireManifest, requireTool, type Prepared } from "./prepare";
-import { callRead, requireConnected, type Session } from "./core";
+import { callBatch, type BatchLine, type OpenSession } from "./core";
+import { DirectSession, resolveTransport } from "./direct";
 import { fileOf, itemCount, parseList, shape } from "./output";
 import { newRun, writePrivate } from "./results";
-import { decide, loadPolicy } from "./policy";
+import { loadPolicy } from "./policy";
 
-type Line = { id?: unknown; connector?: unknown; tool?: unknown; args?: unknown; select?: unknown; where?: unknown; items?: unknown; deadline?: unknown };
-type Task = { id: unknown; index: number; p: Prepared; raw: Record<string, unknown>; deadline: number; shape: Parameters<typeof shape>[1]; attempts: number };
 type Failure = { code: Code; message: string; help?: string[] };
 export type Out = { id: unknown; ok: boolean; ms?: number; result?: unknown; error?: Failure & { retryable: boolean; attempts?: number } };
-
-/** An error as a batch line reports it, its hints kept. */
-const errorOf = (error: unknown): Failure => {
-  const e = asPlugboardError(error, "UPSTREAM_ERROR");
-  return { code: e.code as Code, message: e.message, ...(e.hints.length ? { help: e.hints } : {}) };
-};
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/** A JSONL line as the CLI takes it: a call, a deadline and how to shape its result. */
+type CliLine = BatchLine & { shape: Parameters<typeof shape>[1] };
 
 export type BatchOptions = { profile: string; concurrency: number; perConnector: number; ordered: boolean; budgetMs: number };
-export type Client = Pick<ClaudeConnectors, "request" | "waitForServers" | "close">;
 
-/** JSONL in → one result per line out, on one client. Reads only; each line fails on its own. */
-export async function runBatch(input: string, o: BatchOptions, emit: (out: Out) => void, makeClient: (needs: Manifest[]) => Promise<Client>, backoffMs = [1000, 4000]): Promise<number> {
-  const policy = loadPolicy();
-  const outputs: (Out | undefined)[] = [];
-  let failed = 0;
-  let next = 0; // ordered mode: index of the next line to print
-  const done = (index: number, out: Out) => {
-    if (!out.ok) failed++;
-    outputs[index] = out;
-    if (!o.ordered) return emit(out);
-    while (outputs[next] !== undefined) emit(outputs[next++]!);
+/** A JSONL line as a call: its deadline and shape parsed inside the batch, so a bad one fails that line under its id. */
+function toLine(raw: Record<string, unknown>): CliLine {
+  return {
+    id: raw.id, connector: raw.connector as string, tool: raw.tool as string, args: raw.args as Record<string, unknown> | undefined,
+    timeoutMs: parseDeadline(raw.deadline as string | undefined),
+    shape: { select: Array.isArray(raw.select) ? raw.select.map(String) : parseList(raw.select as string | undefined), where: raw.where as string | undefined, items: raw.items as string | undefined },
   };
+}
 
-  const tasks: Task[] = [];
-  const lines = input.split("\n").map(l => l.trim()).filter(Boolean);
-  lines.forEach((text, index) => {
-    let line: Line = {};
-    try {
-      line = JSON.parse(text);
-      if (!line || typeof line !== "object" || Array.isArray(line)) throw new Error("line is not a JSON object");
-      if (typeof line.connector !== "string" || typeof line.tool !== "string") throw fail("VALIDATION_ERROR", "connector and tool are required strings");
-      if (line.args !== undefined && (typeof line.args !== "object" || line.args === null || Array.isArray(line.args))) throw fail("VALIDATION_ERROR", "args must be an object");
-      const manifest = requireManifest(policy, line.connector);
-      const tool = requireTool(manifest, line.tool);
-      const p = prepare(policy, manifest, tool, (line.args ?? {}) as Record<string, unknown>, false);
-      if (p.cls === "write") throw fail("POLICY_DENIED", `${manifest.id}:${tool.name} is a write tool; batch runs reads only`);
-      decide(policy, o.profile, manifest.id, tool, false);
-      tasks.push({ id: line.id ?? index, index, p, raw: (line.args ?? {}) as Record<string, unknown>, deadline: parseDeadline(line.deadline), attempts: 0, shape: {
-        select: Array.isArray(line.select) ? line.select.map(String) : parseList(line.select as string | undefined),
-        where: line.where as string | undefined, items: line.items as string | undefined } });
-    } catch (error) {
-      const e = errorOf(error);
-      done(index, { id: line.id ?? index, ok: false, error: { ...e, code: e.code === "UPSTREAM_ERROR" ? "VALIDATION_ERROR" : e.code, retryable: false } });
-    }
-  });
-  if (!tasks.length) return lines.length && failed ? EXIT.PARTIAL : EXIT.OK;
-
-  const failAll = (list: Task[], failure: Failure) => { for (const t of list.splice(0)) done(t.index, { id: t.id, ok: false, error: { ...failure, retryable: false } }); };
-  let client: Client;
-  try { client = await makeClient(tasks.map(t => t.p.manifest)); } catch (error) {
-    const e = asPlugboardError(error, "UNREACHABLE");
-    failAll(tasks, errorOf(e));
-    return e.exitCode;
+/** Text lines as they arrive, each parsed as JSON; a blank line is skipped, one that isn't JSON is its line's failure. */
+async function* jsonLines(texts: AsyncIterable<string> | Iterable<string>): AsyncGenerator<Record<string, unknown> | PlugboardError> {
+  for await (const text of texts) {
+    if (!text.trim()) continue;
+    try { yield JSON.parse(text); } catch (error) { yield fail("VALIDATION_ERROR", `Not JSON: ${(error as Error).message}`); }
   }
+}
 
-  let stopped: Failure | undefined; // a broken bridge, or a model reached: the rest of the batch fails with it
-  try {
-    const names = [...new Set(tasks.map(t => t.p.manifest.connectorName))];
-    let servers: Awaited<ReturnType<Client["waitForServers"]>> = [];
-    // One connection check for the whole batch: each line's read sees this snapshot, not a new discovery wait.
-    const session: Session = { request: (req, opts) => client.request(req, opts), waitForServers: async () => servers };
-    const blind = new Map<string, Failure>(); // connector name → its failure, hints kept: the rest of its lines fail fast
-    try {
-      servers = await client.waitForServers(names);
-      for (const t of tasks) if (!blind.has(t.p.manifest.connectorName)) {
-        try { requireConnected(servers, t.p.manifest); } catch (error) { blind.set(t.p.manifest.connectorName, errorOf(error)); }
+/** JSONL in → one result per line out, through the core's batch, as lines arrive. Reads only; each line fails on its own. */
+export async function runBatch(texts: AsyncIterable<string> | Iterable<string>, o: BatchOptions, emit: (out: Out) => void, open: OpenSession): Promise<number> {
+  let failed = false;
+  let stop: Code | undefined; // the session broke, or a model was reached: the batch's exit code
+  for await (const r of callBatch(() => open, loadPolicy(), jsonLines(texts), o, toLine)) {
+    let result: unknown;
+    if (r.ok) {
+      try { result = shape(r.value, r.line.shape); } catch (error) { // its where or select: that line's failure only
+        const e = asPlugboardError(error, "VALIDATION_ERROR");
+        failed = true;
+        emit({ id: r.id, ok: false, ms: r.ms, error: { code: e.code as Code, message: e.message, ...(e.hints.length ? { help: e.hints } : {}), retryable: false } });
+        continue;
       }
-    } catch (error) { failAll(tasks, { ...errorOf(error), code: "UNREACHABLE" }); return EXIT.UNREACHABLE; }
-
-    const queue = [...tasks];
-    const active = new Map<string, number>();
-    const caps = new Map<string, number>();
-    let running = 0;
-    const budgetEnd = Date.now() + o.budgetMs;
-    await new Promise<void>(resolve => {
-      const pump = () => {
-        if (stopped) failAll(queue, stopped);
-        if (Date.now() > budgetEnd) failAll(queue, { code: "TIMEOUT", message: "Batch budget exceeded" });
-        for (let i = 0; i < queue.length && running < o.concurrency; i++) {
-          const t = queue[i]!;
-          const name = t.p.manifest.connectorName;
-          if (blind.has(name)) { queue.splice(i--, 1); done(t.index, { id: t.id, ok: false, error: { ...blind.get(name)!, code: "AUTH_REQUIRED", retryable: false } }); continue; }
-          if ((active.get(name) ?? 0) >= (caps.get(name) ?? o.perConnector)) continue;
-          queue.splice(i--, 1);
-          running++;
-          active.set(name, (active.get(name) ?? 0) + 1);
-          void run(t).finally(() => { running--; active.set(name, active.get(name)! - 1); pump(); });
-        }
-        if (!running && !queue.length) resolve();
-      };
-      const run = async (t: Task) => {
-        const started = Date.now();
-        t.attempts++;
-        try {
-          const request = { connector: t.p.manifest.id, tool: t.p.tool.name, args: t.raw };
-          const { value } = await callRead(async () => session, policy, o.profile, request, t.deadline); // the core's read, as the CLI's
-          done(t.index, { id: t.id, ok: true, ms: Date.now() - started, result: shape(value, t.shape) });
-        } catch (error) {
-          const e = errorOf(error);
-          const name = t.p.manifest.connectorName;
-          if (e.code === "UNREACHABLE") stopped ??= { code: "UNREACHABLE", message: "Bridge failed during the batch" };
-          if (e.code === "COST_GUARD") stopped ??= { ...e, message: `Stopped: ${e.message}` };
-          if (e.code === "AUTH_REQUIRED") blind.set(name, e);
-          const again = (e.code === "RATE_LIMITED" && t.attempts < 3) || (e.code === "TIMEOUT" && t.attempts < 2);
-          if (again && !stopped) {
-            if (e.code === "RATE_LIMITED") {
-              caps.set(name, 1);
-              await sleep(retryAfterMs(e.message) ?? backoffMs[t.attempts - 1]! * (1 + Math.random() * 0.2));
-            }
-            queue.push(t);
-            return;
-          }
-          done(t.index, { id: t.id, ok: false, ms: Date.now() - started, error: { ...e, retryable: e.code === "RATE_LIMITED" || e.code === "TIMEOUT", attempts: t.attempts } });
-        }
-      };
-      pump();
-    });
-    if (stopped) return EXIT[stopped.code];
-    try { await costGuard(client); } catch (error) {
-      const e = errorOf(error);
-      emit({ id: null, ok: false, error: { ...e, retryable: false } });
-      return EXIT.COST_GUARD;
+      emit({ id: r.id, ok: true, ms: r.ms, result });
+      continue;
     }
-    return failed ? EXIT.PARTIAL : EXIT.OK;
-  } finally { await client.close(); }
+    failed = true;
+    const code = r.error.code as Code;
+    if (code === "UNREACHABLE" || code === "COST_GUARD") stop ??= code;
+    emit({ id: r.id, ok: false, ...(r.ms !== undefined ? { ms: r.ms } : {}), error: {
+      code, message: r.error.message, ...(r.error.hints.length ? { help: r.error.hints } : {}), retryable: r.retryable, ...(r.attempts ? { attempts: r.attempts } : {}) } });
+  }
+  return stop ? EXIT[stop] : failed ? EXIT.PARTIAL : EXIT.OK;
 }
 
 const INLINE_BUDGET = 15_000; // characters: well under the 30,000 at which Claude Code saves Bash output to a file
@@ -167,8 +83,7 @@ export function axiSummary(outs: Out[], inline?: string) {
   let dir: string | undefined;
   let writeError: string | undefined;
   const used = new Set<string>();
-  const batchError = outs.find(o => o.id === null && !o.ok)?.error; // the cost guard: about the whole run, not a line
-  const rows = outs.filter(o => o.id !== null).map(out => {
+  const rows = outs.map(out => {
     if (!out.ok) return { out, row: { id: String(out.id ?? ""), ok: false, ms: out.ms ?? null, items: null, tokens: null, file: null as string | null } };
     const { ext, text } = fileOf(out.result);
     let file: string | null = fileName(out.id, ext, used);
@@ -176,7 +91,7 @@ export function axiSummary(outs: Out[], inline?: string) {
     return { out, row: { id: String(out.id), ok: true, ms: out.ms ?? null, items: itemCount(out.result) ?? null, tokens: tokens(text.length), file } };
   });
   const errors = rows.filter(r => !r.out.ok).map(r => ({ id: r.row.id, code: r.out.error!.code, message: r.out.error!.message }));
-  const head = { run: dir ?? "", results: rows.map(r => r.row), ...(errors.length ? { errors } : {}), ...(batchError ? { error: { code: batchError.code, message: batchError.message } } : {}) };
+  const head = { run: dir ?? "", results: rows.map(r => r.row), ...(errors.length ? { errors } : {}) };
   const wanted = inline && inline !== "all" && inline !== "none" ? new Set(parseList(inline)) : undefined;
   let budget = inline === "all" ? Infinity : inline === "none" ? 0 : INLINE_BUDGET - encode(head).length;
   const inlined: [string, unknown][] = [];
@@ -215,14 +130,22 @@ export async function batchCommand(argv: string[], axi = false): Promise<number>
   const policy = loadPolicy();
   const concurrency = values.concurrency === undefined ? policy.limits.concurrency : Number(values.concurrency);
   if (!Number.isInteger(concurrency) || concurrency < 1) throw fail("VALIDATION_ERROR", "--concurrency must be a positive whole number");
-  const input = await Bun.stdin.text();
   const options = {
     profile: profileName(values as Record<string, string>), concurrency, perConnector: policy.limits.perConnector,
     ordered: values.ordered === true || axi, budgetMs: parseDeadline(values.budget, 300_000),
   };
-  if (!axi) return runBatch(input, options, out => process.stdout.write(`${JSON.stringify(out)}\n`), needs => connect(policy, needs));
-  const outs: Out[] = [];
-  const code = await runBatch(input, options, out => outs.push(out), needs => connect(policy, needs));
-  process.stdout.write(`${encode(axiSummary(outs, values.inline as string | undefined))}\n`);
-  return code;
+  // One session for the batch, taking each connector on as its first line comes, as the library's does.
+  const session = new DirectSession([], () => connectClaude(policy), undefined, { transport: resolveTransport(policy) });
+  const open: OpenSession = async manifest => { session.use([manifest]); return session; };
+  const stdin = createInterface({ input: process.stdin, crlfDelay: Infinity }); // stdin line by line, as it arrives
+  try {
+    if (!axi) return await runBatch(stdin, options, out => process.stdout.write(`${JSON.stringify(out)}\n`), open);
+    const outs: Out[] = [];
+    const code = await runBatch(stdin, options, out => outs.push(out), open);
+    process.stdout.write(`${encode(axiSummary(outs, values.inline as string | undefined))}\n`);
+    return code;
+  } finally {
+    stdin.close();
+    await session.close();
+  }
 }
