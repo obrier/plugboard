@@ -1,35 +1,62 @@
-# Deploys site/ (the landing page) to GitHub Pages.
-# Idle while the repository is private: Pages on a private repo needs a paid plan and
-# would publish the site before launch. Once public, enable Pages
-# (Settings → Pages → Source: GitHub Actions) and it deploys on every change to site/.
+# Builds the site and deploys it to GitHub Pages: the landing page (site/) at the root, and the docs
+# (docs/, built with VitePress) under /docs/. A pull request that touches either builds it without deploying,
+# so a dead link fails there. Pages is set to deploy from GitHub Actions (Settings → Pages → Source).
 name: pages
 on:
   push:
     branches: [main]
-    paths: ["site/**"]
+    paths: ["site/**", "docs/**", ".github/workflows/pages.yml"]
+  pull_request:
+    paths: ["site/**", "docs/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }} # a deploy on main finishes; a newer one waits
 
 jobs:
-  deploy:
-    if: ${{ !github.event.repository.private }}
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read # configure-pages reads the site URL
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v6
+      - name: Build the docs
+        working-directory: docs
+        env:
+          BASE_URL: ${{ steps.pages.outputs.base_url }} # empty on a pull request, which builds with the config's default
+        run: |
+          if [ -n "$BASE_URL" ]; then export DOCS_URL="$BASE_URL/docs/"; fi
+          bun install --frozen-lockfile
+          ./node_modules/.bin/vitepress build .
+      - name: Put the landing page at the root and the docs under /docs/
+        run: |
+          mkdir _site && cp -R site/. _site/ && cp -R docs/.vitepress/dist _site/docs
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
       - id: deployment
         uses: actions/deploy-pages@v5

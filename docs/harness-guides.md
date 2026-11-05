@@ -1,4 +1,4 @@
-# Use Plugboard from…
+# Use it from any agent
 
 One instruction block works for every harness. What changes is the file it goes in. Install first:
 

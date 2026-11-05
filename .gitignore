@@ -3,3 +3,4 @@ dist/
 release/
 .claude/
 docs/launch/
+docs/.vitepress/cache/
