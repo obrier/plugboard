@@ -1,0 +1,62 @@
+/* The landing page's colours (site/index.html). */
+:root {
+  --vp-c-brand-1: #c2410c; --vp-c-brand-2: #9a3412; --vp-c-brand-3: #c2410c; --vp-c-brand-soft: #fdeee4;
+  --vp-c-bg: #fbfaf8; --vp-c-bg-alt: #f4f1ec; --vp-c-text-1: #1c1b19; --vp-c-text-2: #5f5b55; --vp-c-divider: #e7e3dd;
+}
+.dark {
+  --vp-c-brand-1: #fb923c; --vp-c-brand-2: #fdba74; --vp-c-brand-3: #ea580c; --vp-c-brand-soft: #2a1d14;
+  --vp-c-bg: #121114; --vp-c-bg-alt: #1a191d; --vp-c-text-1: #ecebe8; --vp-c-text-2: #a39f99; --vp-c-divider: #2b2a2f;
+}
+
+/* Type: the landing page's tighter headings. */
+:root { --vp-font-family-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.vp-doc h1, .vp-doc h2, .vp-doc h3 { letter-spacing: -0.02em; }
+.vp-doc h1 { font-size: 36px; line-height: 1.15; }
+.vp-doc h2 { border-top: 1px solid var(--vp-c-divider); padding-top: 28px; margin-top: 44px; }
+.vp-doc p, .vp-doc li { line-height: 1.7; }
+
+/* Inline code: the landing page's soft accent. */
+:root { --vp-code-color: var(--vp-c-text-1); --vp-code-bg: var(--vp-c-brand-soft); }
+
+/* Code blocks: the landing page's terminal, dark in both themes, with a title bar on shell blocks. */
+:root, .dark { --vp-code-block-bg: #17161a; --vp-code-block-color: #e9e6e1; --vp-code-block-divider-color: #26252a; --vp-code-copy-code-bg: #26252a; --vp-code-copy-code-hover-bg: #302e35; --vp-code-lang-color: #8f8a83; }
+.dark { --vp-code-block-bg: #0b0b0d; }
+.vp-doc div[class*="language-"] { border-radius: 12px; box-shadow: 0 14px 40px -24px rgb(0 0 0 / 0.5); }
+.vp-doc :is(.language-bash, .language-sh, .language-console, .language-shell) { padding-top: 34px; }
+.vp-doc :is(.language-bash, .language-sh, .language-console, .language-shell)::before {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: 34px; border-bottom: 1px solid #26252a;
+  background: radial-gradient(circle 5.5px at 20px 17px, #3a3840 98%, transparent) , radial-gradient(circle 5.5px at 38px 17px, #3a3840 98%, transparent), radial-gradient(circle 5.5px at 56px 17px, #3a3840 98%, transparent);
+}
+.vp-doc :is(.language-bash, .language-sh, .language-console, .language-shell) > span.lang { top: 8px; }
+.vp-doc :is(.language-bash, .language-sh, .language-console, .language-shell) > button.copy { top: 46px; }
+
+/* Tables: the landing page's bordered card with small-caps headers. */
+.vp-doc table { display: table; width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--vp-c-divider); border-radius: 12px; overflow: hidden; font-size: 15px; }
+.vp-doc tr { border: 0; } .vp-doc tr:nth-child(2n) { background: transparent; }
+.vp-doc th, .vp-doc td { border: 0; border-bottom: 1px solid var(--vp-c-divider); padding: 10px 14px; vertical-align: top; }
+.vp-doc tr:last-child td { border-bottom: 0; }
+.vp-doc th { background: var(--vp-c-bg-alt); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--vp-c-text-2); font-weight: 600; }
+@media (max-width: 640px) { .vp-doc table { display: block; overflow-x: auto; } }
+
+/* Callouts: tip in the brand's soft orange, warning in the landing page's amber. */
+:root { --vp-custom-block-tip-bg: var(--vp-c-brand-soft); --vp-custom-block-tip-border: transparent; --vp-custom-block-tip-text: var(--vp-c-text-1);
+  --vp-custom-block-warning-bg: #fff7e6; --vp-custom-block-warning-border: #f0d39b; --vp-custom-block-warning-text: var(--vp-c-text-1); }
+.dark { --vp-custom-block-warning-bg: #241d10; --vp-custom-block-warning-border: #5c4a22; }
+.vp-doc .custom-block { border-radius: 12px; border-left: 3px solid var(--vp-c-brand-1); }
+.vp-doc .custom-block.warning { border-left-color: #d97706; }
+.vp-doc .custom-block .custom-block-title { color: var(--vp-c-brand-1); }
+.vp-doc .custom-block.warning .custom-block-title { color: #b45309; }
+.dark .vp-doc .custom-block.warning .custom-block-title { color: #fbbf24; }
+
+/* Home: the hero name in the ink colour, the cards like the landing page's. */
+.VPHome .VPHero .name, .VPHome .VPHero .name.clip { background: none; -webkit-text-fill-color: var(--vp-c-text-1); color: var(--vp-c-text-1); letter-spacing: -0.03em; }
+.VPHome .VPHero .tagline { font-size: 19px; line-height: 1.6; max-width: 40em; }
+.VPHome .VPFeature { border: 1px solid var(--vp-c-divider); background: var(--vp-c-bg); border-radius: 12px; }
+.VPHome .VPFeature .title { font-size: 17px; }
+.pb-install { display: flex; align-items: center; gap: 10px; margin-top: 22px; max-width: 520px; background: #17161a; color: #e9e6e1; border-radius: 10px; padding: 12px 14px; font: 15px var(--vp-font-family-mono); }
+.dark .pb-install { background: #0b0b0d; box-shadow: inset 0 0 0 1px #26252a; }
+.pb-install .p { color: #8f8a83; user-select: none; }
+.pb-install code { flex: 1; overflow-x: auto; white-space: nowrap; }
+.pb-install button { flex: none; border: 1px solid #3a3840; border-radius: 7px; padding: 4px 10px; font: 13px var(--vp-font-family-base); color: #e9e6e1; }
+.pb-install button:hover { border-color: #fb923c; }
+@media (max-width: 639px) { .vp-doc div[class*="language-"] { border-radius: 0; } .pb-install { font-size: 13px; } }
