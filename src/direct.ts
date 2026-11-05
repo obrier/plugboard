@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { version } from "../package.json";
 import type { ClaudeConnectors, ConnectorServer, ControlRequest } from "./bridge/client";
 import type { Manifest } from "./cache";
+import { requireConnected } from "./connected";
+import { fail } from "./errors";
 import { runtime } from "./runtime";
 
 /** The one host the direct path talks to: Anthropic's MCP proxy for claude.ai connectors. It serves connector
@@ -39,8 +41,11 @@ export function readLogin(): Login | undefined {
 
 /** The request was refused before the tool ran: safe to make again through Claude Code. */
 class Refused extends Error {}
-// Connection errors that mean nothing was sent (Bun's codes, then Node's).
-const NOT_SENT = new Set(["ConnectionRefused", "FailedToOpenSocket", "ConnectionClosed", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+// Connection errors that mean nothing was sent: Bun's and Node's codes for a refused connection and a failed DNS
+// lookup (observed on Bun 1.4 and Node 22 and 26). A reset or close can come after the request left: not here.
+const NOT_SENT = new Set(["ConnectionRefused", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+/** The request left and no full answer came back: the tool may have run. TIMEOUT, which a write records as unknown. */
+const mayHaveRun = (what: string) => fail("TIMEOUT", `Timed out waiting for mcp_call: ${what}; the connector may have run it`);
 
 /** A session that calls connectors direct, and starts Claude Code only when it has to: no usable login, a login
  * expiring within a minute, a connector without a cached ID, or a request the proxy refused before the tool ran
@@ -48,31 +53,39 @@ const NOT_SENT = new Set(["ConnectionRefused", "FailedToOpenSocket", "Connection
  * reported as it is, so a write is never sent twice. Once fallen back, the rest of the session is Claude Code's. */
 export class DirectSession {
   private login?: Login;
-  private readonly tools = new Map<string, { id: string; name: string }>();
+  private readonly tools = new Map<string, { id?: string; name: string; manifest: Manifest }>();
   private direct?: boolean; // decided on first use: the login is read only by a session that is used
+  /** Why calls go through Claude Code, once they do (doctor reports it). */
+  notDirect?: string;
   private claude?: Promise<Client>;
+  private discovered: ConnectorServer[] = []; // Claude Code's list once it started, for the same check as without the direct path
   private readonly clientSession = crypto.randomUUID();
 
   constructor(private readonly needs: Manifest[], private readonly openClaude: () => Promise<Client>, private readonly deps: DirectDeps = { login: readLogin, fetch }) {
-    for (const m of needs) if (typeof m.server?.id === "string") for (const t of m.tools) this.tools.set(t.sourceName, { id: m.server.id, name: t.name });
+    for (const m of needs) for (const t of m.tools) this.tools.set(t.sourceName, { id: typeof m.server?.id === "string" ? m.server.id : undefined, name: t.name, manifest: m });
   }
 
   private isDirect() {
     if (this.direct === undefined) {
-      const ids = this.needs.every(m => typeof m.server?.id === "string");
-      const login = ids ? this.deps.login() : undefined;
-      this.direct = !!login && (login.expiresAt === undefined || login.expiresAt - Date.now() > 60_000)
-        && (login.scopes === undefined || login.scopes.includes("user:mcp_servers"));
+      const missing = this.needs.find(m => typeof m.server?.id !== "string");
+      const login = missing ? undefined : this.deps.login();
+      this.notDirect = missing ? `${missing.connectorName} has no connector ID cached (run \`plugboard refresh\`)`
+        : !login ? "no claude.ai login found"
+        : login.expiresAt !== undefined && login.expiresAt - Date.now() <= 60_000 ? "the claude.ai login expires within a minute"
+        : login.scopes !== undefined && !login.scopes.includes("user:mcp_servers") ? "the claude.ai login has no connector access (user:mcp_servers)"
+        : undefined;
+      this.direct = this.notDirect === undefined;
       if (this.direct) this.login = login;
     }
     return this.direct;
   }
 
   /** Claude Code, started once, with the session's connectors discovered: a call right after a start would find them pending. */
-  private fallback(): Promise<Client> {
+  private fallback(reason?: string): Promise<Client> {
+    if (this.direct) this.notDirect = reason;
     this.direct = false;
     return (this.claude ??= this.openClaude().then(async client => {
-      await client.waitForServers([...new Set(this.needs.map(m => m.connectorName))]);
+      this.discovered = await client.waitForServers([...new Set(this.needs.map(m => m.connectorName))]);
       return client;
     }));
   }
@@ -84,11 +97,19 @@ export class DirectSession {
   }
 
   async request<T = Record<string, unknown>>(request: ControlRequest, options: { timeoutMs?: number } = {}): Promise<T> {
-    if (request.subtype === "mcp_call" && this.isDirect()) {
+    if (request.subtype === "mcp_call") {
       const tool = this.tools.get(String(request.tool));
-      if (tool) {
-        try { return await this.call(tool, request.arguments, options.timeoutMs ?? 35_000) as T; } catch (error) { if (!(error instanceof Refused)) throw error; }
+      let refused: string | undefined;
+      if (tool?.id && this.isDirect()) {
+        try { return await this.call({ id: tool.id, name: tool.name }, request.arguments, options.timeoutMs ?? 35_000) as T; } catch (error) {
+          if (!(error instanceof Refused)) throw error;
+          refused = error.message;
+        }
       }
+      const client = await this.fallback(refused);
+      // As without the direct path: a connector Claude Code doesn't list as connected is refused before the call.
+      if (tool) requireConnected(this.discovered, tool.manifest);
+      return client.request<T>(request, options);
     }
     // Nothing but the proxy was reached while Claude Code never started: the session's cost is zero by construction.
     if (request.subtype === "get_session_cost" && !this.claude)
@@ -112,13 +133,19 @@ export class DirectSession {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
+      // Plugboard's own words only: a fetch error can quote the request's headers, and so the login.
       const e = error as Error & { code?: string; cause?: { code?: string } };
-      if (e.name === "TimeoutError" || e.name === "AbortError") throw new Error("Timed out waiting for mcp_call");
-      if (NOT_SENT.has(e.code ?? "") || NOT_SENT.has(e.cause?.code ?? "")) throw new Refused(e.message);
-      throw error;
+      const code = e.code ?? e.cause?.code;
+      if (NOT_SENT.has(code ?? "")) throw new Refused(`could not connect to the connector proxy (${code})`);
+      if (e.name === "TimeoutError" || e.name === "AbortError") throw mayHaveRun("no answer in time");
+      throw mayHaveRun(`the connection to the connector proxy failed (${code ?? e.name})`);
     }
-    if ([400, 401, 403, 404].includes(res.status)) { await res.body?.cancel(); throw new Refused(`connector proxy ${res.status}`); }
-    const text = await res.text();
+    if ([400, 401, 403, 404].includes(res.status)) { await res.body?.cancel().catch(() => {}); throw new Refused(`the connector proxy refused the call (${res.status})`); }
+    let text: string;
+    try { text = await res.text(); } catch (error) {
+      const e = error as Error & { code?: string; cause?: { code?: string } };
+      throw mayHaveRun(e.name === "TimeoutError" || e.name === "AbortError" ? "the answer didn't finish in time" : `the answer was cut off (${e.code ?? e.cause?.code ?? e.name})`);
+    }
     if (!res.ok) throw new Error(`connector proxy ${res.status}: ${text.slice(0, 200)}`);
     const message = parse(text, res.headers.get("content-type") ?? "");
     if (message?.error) throw new Error(String(message.error.message ?? "connector proxy error"));

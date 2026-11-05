@@ -133,3 +133,64 @@ test("connect gives a session that needs connectors the direct path (no login re
   const off = await connect(parsePolicy("claude_path = \"/nonexistent/claude\"", "policy.toml"), [calendar]).catch(e => e);
   expect(off.code).toBe("BRIDGE_BROKEN"); // it tried to start Claude Code
 });
+
+// Real fetch against a loopback server: the answer's headers arrive in time, its body doesn't.
+async function lateBody(bodyAfterMs: number) {
+  const runs = { n: 0 };
+  const server = Bun.serve({ port: 0, fetch: () => {
+    runs.n++;
+    const stream = new ReadableStream({ async start(c) { c.enqueue(new TextEncoder().encode(": open\n\n")); await Bun.sleep(bodyAfterMs); c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: 1, result: RESULT })}\n\n`)); c.close(); } });
+    return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+  } });
+  const fetchVia = ((_url: string, init: RequestInit) => fetch(`http://127.0.0.1:${server.port}/`, init)) as unknown as typeof fetch;
+  return { fetchVia, runs, stop: () => server.stop(true) };
+}
+
+test("an answer cut off by the deadline after its headers is a timeout: the tool may have run, nothing falls back", async () => {
+  const late = await lateBody(400);
+  try {
+    const c = claude();
+    const s = new DirectSession([calendar], c.open as never, { login: () => login, fetch: late.fetchVia });
+    const error = await invoke(s, { tool: calendar.tools[0], args: {} } as never, 150).catch(e => e);
+    expect(error.code).toBe("TIMEOUT");
+    expect(c.opened()).toBe(0);
+  } finally { late.stop(); }
+});
+
+test("a connection lost after the request left is a timeout, not an error that would allow a resend", async () => {
+  const p = proxy(() => { throw Object.assign(new TypeError("socket closed"), { code: "ECONNRESET" }); }), c = claude();
+  const error = await invoke(session(p, c), { tool: calendar.tools[0], args: {} } as never, 1_000).catch(e => e);
+  expect(error.code).toBe("TIMEOUT");
+  expect(c.opened()).toBe(0);
+});
+
+test("a fetch error never carries the login into the message", async () => {
+  const p = proxy(() => { throw new TypeError("Header 'Authorization' has invalid value: 'Bearer secret-token'"); });
+  const error = await invoke(session(p), { tool: calendar.tools[0], args: {} } as never, 1_000).catch(e => e);
+  expect(String(error.message)).not.toContain("secret-token");
+});
+
+test("after a fallback, a connector Claude Code lists as not connected is AUTH_REQUIRED, as without the direct path", async () => {
+  const p = proxy(() => new Response("no", { status: 401 }));
+  const open = async () => ({
+    request: async () => { throw new Error("must not be called"); },
+    waitForServers: async () => [{ name: calendar.connectorName, status: "needs-auth", tools: [] }],
+    close: async () => {},
+  });
+  const error = await invoke(new DirectSession([calendar], open as never, { login: () => login, fetch: p.fetch }), { tool: calendar.tools[0], args: {} } as never, 1_000).catch(e => e);
+  expect(error.code).toBe("AUTH_REQUIRED");
+  expect(error.message).toContain("needs-auth");
+});
+
+test("a session says why it isn't direct", async () => {
+  const c = claude();
+  const none = session(proxy(ok()), c, { login: null });
+  await none.waitForServers();
+  expect(none.notDirect).toBe("no claude.ai login found");
+  const refused = session(proxy(() => new Response("no", { status: 404 })), c);
+  await refused.request<unknown>(CALL);
+  expect(refused.notDirect).toBe("the connector proxy refused the call (404)");
+  const direct = session(proxy(ok()), c);
+  await direct.request<unknown>(CALL);
+  expect(direct.notDirect).toBeUndefined();
+});

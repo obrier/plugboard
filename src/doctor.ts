@@ -4,10 +4,11 @@ import { parseArgs } from "node:util";
 import { unresolvedKeys } from "./audit";
 import { captureConnectorSchemas } from "./bridge/capture";
 import type { ConnectorServer } from "./bridge/client";
-import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveIndex, toolHash } from "./cache";
+import { annotationsOf, connectorId, loadIndex, loadManifest, manifestIds, saveIndex, toolHash, type Manifest, type ManifestTool } from "./cache";
 import { BIN, prepare, profileName } from "./call";
 import { invoke } from "./core";
 import { authStatus, claudePath, claudeVersion, connectClaude, costGuard } from "./claude";
+import { DirectSession, directEnabled } from "./direct";
 import { AxiError } from "axi-sdk-js";
 import { asAxiError, EXIT } from "./errors";
 import { cacheDir, claudeVersionsDir, collapseHome, onWindowsDrive, platformLabel, policyPath, saveJson, saveRecord, stateDir, windowsClaudeFromWSL } from "./platform";
@@ -104,6 +105,19 @@ export async function doctor(argv: string[]) {
   } catch (error) { add("policy", "fail", (error as Error).message, "Fix policy.toml"); }
   const required = prof ? requiredConnectors(prof) : [];
 
+  /** The same read as calls make it: direct to the connector proxy, never through Claude Code. A proxy that
+   * answers but fails a read Claude Code made leaves the connector's calls failing with no fallback: blind. */
+  async function checkDirect(id: string, manifest: Manifest, tools: ManifestTool[]) {
+    const session = new DirectSession([manifest], async () => { throw new Error("not direct"); });
+    const result = await probe(tools, tool => invoke(session, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
+    if (result.tool) add(`direct:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
+    else if (session.notDirect) add(`direct:${id}`, "warn", `calls go through Claude Code: ${session.notDirect}`, `Run \`${BIN} refresh\` or \`claude /login\` if this persists`);
+    else {
+      blind.add(id);
+      add(`direct:${id}`, "fail", `the connector proxy failed a read Claude Code made: ${(result.error ?? "").slice(0, 160)}`, "Set PLUGBOARD_DIRECT=0 until Plugboard is updated");
+    }
+  }
+
   // 4–8, 10: protocol, cost, connectors, drift, live reads
   let readyMs: number | undefined;
   let costText: string | undefined;
@@ -179,12 +193,15 @@ export async function doctor(argv: string[]) {
         // A connector left unprobed still gets a line, so it never looks checked when it isn't.
         if (!tools.length) { add(`read:${id}`, "info", `not checked: ${profile} allows no read tool here that runs without arguments`); continue; }
         const result = await probe(tools, tool => invoke(client!, prepare(policy, manifest, tool, {}, false), 30_000).then(() => undefined));
-        if (result.tool) add(`read:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
-        else {
+        if (result.tool) {
+          add(`read:${id}`, "ok", `${result.tool.name} in ${result.ms}ms`);
+          if (directEnabled()) await checkDirect(id, manifest, tools);
+        } else {
           blind.add(id);
           add(`read:${id}`, "fail", (result.error ?? "").slice(0, 160), `Reconnect ${manifest.connectorName.replace(/^claude\.ai /, "")} in claude.ai → Settings → Connectors`);
         }
       }
+      if (!directEnabled()) add("direct", "info", "off: every call starts Claude Code (PLUGBOARD_DIRECT=0, or a custom CLAUDE_CONFIG_DIR)");
       // 5: zero cost (after every call above)
       try {
         costText = await costGuard(client);
